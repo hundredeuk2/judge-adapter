@@ -1,0 +1,6 @@
+{
+  "_comment": "Model-free config (FastChat wrapper / Python API). backend defaults to haiku_direct; set \"backend\": \"choice_endpoint\" to switch.",
+  "transport": "fake",
+  "mode": "single",
+  "trace_dir": "judge_adapter_trace"
+}

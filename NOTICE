@@ -1,0 +1,58 @@
+judge-adapter
+Copyright 2026 hundredeuk2
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+-------------------------------------------------------------------------------
+Third-party material
+-------------------------------------------------------------------------------
+
+This product includes material adapted from FastChat
+(https://github.com/lm-sys/FastChat), Copyright the FastChat authors,
+licensed under the Apache License, Version 2.0. FastChat does not ship a
+NOTICE file at the referenced commit, so no upstream NOTICE text is carried
+over.
+
+Referenced FastChat revision: commit 587d5cfa1609a43d192cedb8441cac3c17db105d
+(fschat 0.2.36).
+
+1. Judge prompt wording (src/judge_adapter/prompt.py, src/judge_adapter/user_prompt.py)
+   The default pairwise judge instructions are adapted from the MT-Bench
+   pairwise judge prompts in fastchat/llm_judge/data/judge_prompts.jsonl
+   ("pair-v2" and "pair-v2-multi-turn"), e.g. "act as an impartial judge",
+   "follows the user's instructions and answers the user's question better",
+   "helpfulness, relevance, accuracy, depth, creativity, and level of detail",
+   the position / length / name bias sentences and "Be as objective as
+   possible". The "### User:" / "### Assistant:" conversation rendering
+   follows the multi-turn template of the same file.
+   Changes: reworded; assistants are referred to by field name; the
+   explanation and the "[[A]]"/"[[B]]"/"[[C]]" verdict format are removed;
+   the output is a single option id; question and conversations are sent as
+   separate named fields. The rubric / reference / data-handling sentences of
+   user_prompt.py are new.
+   The prompts are described in: Zheng et al., "Judging LLM-as-a-Judge with
+   MT-Bench and Chatbot Arena", arXiv:2306.05685 (2023).
+
+2. FastChat host binding (src/judge_adapter/hosts/fastchat.py,
+   src/judge_adapter/fastchat_runner.py) - optional, extra "fastchat"
+   These modules contain no FastChat source code. They import FastChat at run
+   time, replace fastchat.llm_judge.common.run_judge_pair /
+   run_judge_single with functions that follow FastChat's call signature and
+   return contract, run FastChat's own gen_judgment.py / show_result.py, and
+   mirror the command-line option names of gen_judgment.py for validation.
+   The FastChat demo copies FastChat's own data files from the user's
+   FastChat installation or checkout at run time; no FastChat data (MT-Bench
+   questions, reference answers or judge prompts) is distributed with this
+   product.
+
+FastChat itself is not bundled. Installing the optional "fastchat" extra
+downloads FastChat and its dependencies under their own licenses.
+
+-------------------------------------------------------------------------------
+Models and services
+-------------------------------------------------------------------------------
+
+No model weights are distributed. The "haiku_direct" backend calls the
+Anthropic Messages API and the "choice_endpoint" backend calls a RunPod serverless
+endpoint that the user configures; both require the user's own account and
+API key and are subject to those providers' terms.

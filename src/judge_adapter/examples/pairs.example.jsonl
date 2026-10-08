@@ -1,0 +1,2 @@
+{"id": "ex-1", "question_turns": ["Give me one tip for writing a clear bug report."], "response_a": {"id": "draft-v1", "turns": ["Write good reports."]}, "response_b": {"id": "draft-v2", "turns": ["State the exact steps to reproduce, what you expected, and what happened instead."]}}
+{"id": "ex-2", "question_turns": ["Name a prime number between 10 and 20.", "Now name one between 20 and 30."], "response_a": {"id": "bot-x", "turns": ["13 is prime.", "23 is prime."]}, "response_b": {"id": "bot-y", "turns": ["11 is prime.", "25 is prime."]}, "turn": 2}

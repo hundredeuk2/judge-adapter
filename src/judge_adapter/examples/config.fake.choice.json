@@ -1,0 +1,7 @@
+{
+  "_comment": "Model-free config with the choice_endpoint backend. The fake transport needs no endpoint ID, no rate and no key (it uses a labeled placeholder rate).",
+  "transport": "fake",
+  "backend": "choice_endpoint",
+  "mode": "single",
+  "trace_dir": "judge_adapter_trace"
+}

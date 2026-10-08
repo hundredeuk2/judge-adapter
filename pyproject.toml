@@ -1,0 +1,69 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "judge-adapter"
+version = "0.1.0"
+description = "Pairwise LLM-judge call adapter: fixed options, retries 0, run-wide client-side limits, JSONL CLI, optional FastChat binding."
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+requires-python = ">=3.9"
+authors = [{ name = "hundredeuk2" }]
+keywords = ["llm", "llm-as-a-judge", "evaluation", "pairwise", "fastchat", "mt-bench"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = ["httpx>=0.24,<1"]
+
+[project.optional-dependencies]
+# Optional FastChat llm_judge binding (judge_adapter.hosts.fastchat, judge-adapter-fastchat).
+# Pinned to the FastChat commit the binding was written and tested against. A direct URL dependency is allowed by
+# pip for GitHub installs; it is not accepted by PyPI (this package is not published there).
+# The extra also lists the packages that fastchat.llm_judge imports at module load (FastChat's own optional extras),
+# including torch and transformers. They are heavy and are never imported by the core.
+fastchat = [
+    "fschat @ git+https://github.com/lm-sys/FastChat@587d5cfa1609a43d192cedb8441cac3c17db105d",
+    "torch",
+    "transformers",
+    "accelerate",
+    "anthropic",
+    "openai",
+    "pandas",
+    "numpy",
+    "tqdm",
+]
+test = ["pytest>=7"]
+
+[project.scripts]
+judge-adapter = "judge_adapter.cli:main"
+judge-adapter-fastchat = "judge_adapter.fastchat_runner:main"
+
+[project.urls]
+Homepage = "https://github.com/hundredeuk2/judge-adapter"
+Source = "https://github.com/hundredeuk2/judge-adapter"
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/judge_adapter"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/src",
+    "/tests",
+    "/README.md",
+    "/LICENSE",
+    "/NOTICE",
+    "/pyproject.toml",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,0 +1,8 @@
+{"id": "m-ok", "question_turns": ["Suggest a name for a hiking club."], "response_a": {"id": "resp-a1", "turns": ["Trail Talkers"]}, "response_b": {"id": "resp-b1", "turns": ["[[GOOD]] Summit Seekers"]}}
+{"id": "m-tie", "question_turns": ["Say hello in French."], "response_a": {"id": "resp-a2", "turns": ["Bonjour."]}, "response_b": {"id": "resp-b2", "turns": ["Salut."]}}
+{"id": "m-position", "question_turns": ["Pick a color."], "response_a": {"id": "resp-a3", "turns": ["FAKE:POSITION Blue."]}, "response_b": {"id": "resp-b3", "turns": ["Green."]}}
+{"id": "m-format", "question_turns": ["Pick a fruit."], "response_a": {"id": "resp-a4", "turns": ["FAKE:FORMAT Apple."]}, "response_b": {"id": "resp-b4", "turns": ["Pear."]}}
+{"id": "m-same-1", "question_turns": ["Suggest a name for a hiking club."], "response_a": {"id": "resp-a1", "turns": ["Trail Talkers"]}, "response_b": {"id": "resp-b1", "turns": ["[[GOOD]] Summit Seekers"]}}
+{"id": "m-turn2", "question_turns": ["Name a planet.", "Name a moon of that planet."], "response_a": {"id": "resp-a6", "turns": ["Mars.", "[[GOOD]] Phobos."]}, "response_b": {"id": "resp-b6", "turns": ["Mars.", "The Moon."]}, "turn": 2}
+{"id": "m-http500", "question_turns": ["Pick a number."], "response_a": {"id": "resp-a7", "turns": ["FAKE:HTTP500 Seven."]}, "response_b": {"id": "resp-b7", "turns": ["Eight."]}}
+{"id": "m-after-stop", "question_turns": ["Pick an animal."], "response_a": {"id": "resp-a8", "turns": ["[[GOOD]] Otter."]}, "response_b": {"id": "resp-b8", "turns": ["Cat."]}}

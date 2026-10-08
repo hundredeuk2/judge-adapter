@@ -1,0 +1,10 @@
+{
+  "_comment": "REAL (paid) config template. Needs --allow-real. Key: ANTHROPIC_API_KEY (haiku_direct) or RUNPOD_API_KEY (choice_endpoint) from the environment, or set env_file explicitly. For choice_endpoint also set choice_endpoint_id (or JUDGE_ADAPTER_CHOICE_ENDPOINT_ID) and choice_usd_per_second; choice_expected_model is optional.",
+  "transport": "real",
+  "backend": "haiku_direct",
+  "mode": "single",
+  "trace_dir": "judge_adapter_trace",
+  "timeout_seconds": 120.0,
+  "choice_poll_interval_seconds": 5.0,
+  "choice_max_status_polls": 120
+}
