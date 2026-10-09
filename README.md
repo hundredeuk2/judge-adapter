@@ -273,9 +273,12 @@ empty selection when at least one document was scored.
 A single run outside this package's test suite: 90 English questions from HLE (Humanity's Last Exam), a GPT-5.2
 agent whose search returned 5 documents, the preset `v1-thr0.3-dev`, compared with keeping the top 3 documents.
 
-- Agent input tokens were about 44% lower than with the top-3 baseline.
-- Accuracy was similar to top-3; the difference was within the uncertainty of one run.
-- No total-cost reduction was observed in that run: the generator's output grew and offset the input saving.
+- Input tokens: summed over all 90 questions, agent input tokens were about 44% lower than with the top-3 baseline.
+- Quality: quality improvement and equivalence were not established (the difference was within the uncertainty of one
+  run).
+- Total cost: no total-cost advantage was established. On the questions where every compared setting finished (a
+  post-hoc subset of 86), the filtered setting was not cheaper, because the generator's output grew and offset the
+  input saving.
 - All 5 documents were dropped in 25 of the 72 searches that run made.
 
 Total cost depends on the price you assume for filter calls (`choice_usd_per_second`, your configuration) and on the
@@ -569,8 +572,9 @@ variables are removed for each test.
   호출자 책임이다(`select_originals`). 로그는 문서 수·텍스트 bytes(토크나이저를 주면 토큰 수와 이름·버전)만 남기는
   로컬 추정이며 과금 usage나 절감액이 아니다. 질문·원문·id·키는 기본 로그에 없다.
 - **관찰 결과(1회, 보장 아님):** 테스트 밖 단일 실행(HLE 영어 90문항, GPT-5.2 agent, 검색당 5문서, preset
-  `v1-thr0.3-dev`)에서 top-3 대비 입력 토큰 약 44% 감소, 정확도는 top-3와 비슷(차이는 불확실성 범위 안), 생성 출력
-  증가로 총비용 감소는 관찰되지 않았다. 72회 검색 중 25회에서 5문서가 모두 drop되었고, 이는 그 실행의 검색 단위 관찰이지
+  `v1-thr0.3-dev`)에서 입력 토큰은 90문항 전체 합 기준 top-3 대비 약 44% 감소했다. 품질 개선·동등성은 확인되지
+  않았다(차이는 단일 실행의 불확실성 범위 안). 총비용 우위도 확인되지 않았다: 비교한 설정이 모두 끝난 문항(사후 부분집합
+  86개)에서 필터 설정이 더 싸지 않았고, 생성 출력 증가가 입력 절감을 상쇄했다. 72회 검색 중 25회에서 5문서가 모두 drop되었고, 이는 그 실행의 검색 단위 관찰이지
   일반 drop률·실패율이 아니다. 필터 호출 단가는 사용자가 설정한 가정이며 실제로 띄운 모델과 별개다. 용도는 opt-in 입력
   축소 도구이며 품질 향상·총비용 절감을 주장하지 않는다.
 - **preset `v1-thr0.3-dev`:** 영어 V1 지시문·선택지, 실험 때의 문서 템플릿, `threshold(0.3)`, 시험한 크기 범위를 묶은

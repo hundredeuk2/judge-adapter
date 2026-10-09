@@ -20,9 +20,11 @@ Fixed on purpose:
   to do with an empty selection. One observed run (HLE, 90 English questions, GPT-5.2 agent, 5 documents per search,
   preset ``v1-thr0.3-dev``) dropped all 5 documents in 25 of 72 searches: a per-search count from a single run, not a
   general rate.
-- **Opt-in input reduction, no quality or total-cost claim.** In that single run agent input tokens were about 44%
-  lower than a top-3 baseline with similar accuracy (difference within uncertainty), and no total-cost reduction was
-  observed because generator output grew. Not a guarantee. The filter-call price is the rate you configure, separate
+- **Opt-in input reduction, no quality or total-cost claim.** In that single run, agent input tokens summed over all
+  90 questions were about 44% lower than a top-3 baseline. Quality improvement and equivalence were not established
+  (difference within uncertainty). No total-cost advantage was established: on the post-hoc subset of 86 questions
+  where every compared setting finished, the filtered setting was not cheaper because generator output grew. Not a
+  guarantee. The filter-call price is the rate you configure, separate
   from the model you actually serve.
 - **Originals stay with the caller.** The filter returns ids, never rewritten text. The caller stores the original
   documents and restores them by id (``select_originals``).
