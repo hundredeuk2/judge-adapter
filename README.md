@@ -159,6 +159,158 @@ run-wide limits in your own loop, wrap the backend in `judge_adapter.RunGate(bac
 max_submissions)` and call `gate.begin(request)` before each `adapter.judge(request)`; `judge_adapter.cli.run_file`
 does exactly this.
 
+## Context filter (retrieval documents)
+
+`judge_adapter.context_filter` scores retrieved documents against one question through the `choice_endpoint`
+backend: one choice call per document, then a keep / drop decision by an explicit policy. Python API only (no CLI).
+It returns ids and decisions; it never rewrites, shortens or stores document text.
+
+```python
+from judge_adapter import AdapterConfig, build_backend, fakes
+from judge_adapter.context_filter import ContextFilter, Document, select_originals, threshold
+
+cfg = AdapterConfig(transport='fake', backend='choice_endpoint', trace_dir='unused')
+fake = fakes.FakeRelevanceEndpoint()                    # in-process; [[KEEP=p]] in the text sets the fake P(keep)
+backend = build_backend(cfg, transport=fake.transport(), key_provider=lambda: fakes.DUMMY_KEY)
+flt = ContextFilter(cfg, backend, policy=threshold(0.5))   # no default policy: pass one, or preset=...
+docs = [Document('d1', 'A title', 'https://example.invalid/1', 'synthetic text [[KEEP=0.8]]'),
+        Document('d2', 'A title', 'https://example.invalid/2', 'synthetic text [[KEEP=0.1]]')]
+res = flt.filter('a question', docs)
+res.selected_ids                                        # ['d1'], input order
+[(r.id, r.score, r.status, r.decision) for r in res.documents]
+kept = select_originals(docs, res)                      # your own objects, unchanged
+```
+
+For a real endpoint: `AdapterConfig(transport='real', backend='choice_endpoint', choice_endpoint_id=...,
+choice_usd_per_second=..., choice_expected_model=...)` (expected model optional), `build_backend(cfg)`, and
+`ContextFilter(..., budget_cap_usd=..., max_submissions=...)`; both limits are required for a real transport unless
+the policy is `disabled()`. Endpoint, model and rate come only from your configuration.
+
+A runnable integration example (a function-call tool executor over a mock search with synthetic documents, no SDK):
+`python examples/context_filter_tool_executor.py`.
+
+### Input and output
+
+- Input: `question` (non-empty string) and `documents`: `Document(id, title, url, text)` or mappings with those keys
+  (other keys are ignored and never sent). `id` is yours: a non-empty string, unique within the call, never sent to the
+  model. `title` / `url` may be empty strings; `text` must be non-empty.
+- `FilterResult.documents`: one `DocResult` per input document, **in input order**: `index`, `id`, `score`, `status`,
+  `reason`, `decision`, `decision_basis`, `provenance`.
+  - `score`: P(keep), the probability the served model returns for `opt_keep` (`ok` and exact-tie outcomes only).
+    `None` when the document was not scored or the call failed. It is not a calibrated or validated probability of
+    usefulness, and it is never imputed.
+  - `status`: `ok`, `error` (`reason` = the adapter failure reason: `http`, `timeout`, `format_error`, `backend_error`,
+    `contract`, `local_config`, ...) or `not_scored` (`reason` = `policy_disabled`, `over_limit` or `not_submitted`).
+  - `provenance`: prompt version, question id, policy, preset, per-call outcome / detail, served model name (as
+    reported), submissions, status polls, cancels, client seconds, server timing, server usage, the per-call cost
+    estimate and sha256 of the semantic input and raw output. No text, no endpoint ID, no key.
+- `selected_ids`: kept ids, in input order. If nothing is kept it is `[]`; no substitute document is added.
+- `usage` (filter calls only), `cost_estimate` (`is_estimate: true`; `usd: null` if any submitted call has unknown
+  cost; fake runs are labeled `MOCK`), `timing` (measured only), `budget` (run-wide snapshot), `reduction` (below).
+
+**Default: an explicit policy is required.** `ContextFilter` has no default policy, the same convention as
+`AdapterConfig.transport` and the CLI's `--transport`: a call that can cost money or change what an agent sees is never
+started by a default. Omitting both `policy` and `preset`, or passing both, raises `ValueError` before anything is
+built or sent. `policy=disabled()` is the explicit off switch: zero model calls, every document kept with status
+`not_scored` / `policy_disabled`.
+
+### Policies
+
+| Policy | Keeps |
+|---|---|
+| `threshold(t)` | scored documents with `score >= t` (t in [0, 1]); e.g. 0.2999 is dropped and 0.3 is kept at t = 0.3 |
+| `top_k(k)` | the k scored documents with the highest score; exact ties go to the earlier input position |
+| `disabled()` | everything, without calling the model |
+
+Under every policy a document without a score (error, not submitted, over the limit when flagged) is **kept**
+(fail-open; under `top_k` on top of the k) and its status shows why. Rows are never removed.
+
+### Preset `v1-thr0.3-dev` (opt-in)
+
+`ContextFilter(cfg, backend, preset='v1-thr0.3-dev')` fixes the relevance wording `relevance/v1-dev` (English
+instructions and option texts below), its document template (`제목: {title}\nURL: {url}\n\n{text}`; the title label
+is Korean for "Title", as in the run it comes from), `threshold(0.3)` and the size range it was tried on (text <= 8,000,
+title <= 300, URL <= 500 UTF-8 bytes). It is **a development candidate validated once on 25 questions; not a quality
+guarantee**. It was chosen on development data and checked once in a private study; the evidence is not part of this
+package. Results depend on the model you serve. It is not a default and not a recommendation for other tasks.
+`limits=` may override its size range (recorded in the result); `prompt=` / `policy=` cannot be combined with it.
+
+Instructions: "You are given a question and one web search document below. Decide whether this document provides a
+direct answer to the question or intermediate evidence needed to find the answer. Being on the same topic as the
+question is not enough on its own. The correct answer to the question is not given." Options: `opt_keep` "Provides:
+this document contains a direct answer or needed intermediate evidence.", `opt_drop` "Does not provide: this document
+contains neither a direct answer nor needed intermediate evidence."
+
+Without a preset the default prompt `relevance/v1` uses the same wording with the English template
+`Title: {title}\nURL: {url}\n\n{text}`, which was not the template that was tried. A custom
+`RelevancePrompt(version, instructions, keep, drop, document_template)` may use only `{title}`, `{url}`, `{text}`.
+
+### Wire contract (relevance question)
+
+Same endpoint, polling, cancel and strict restoration as the pairwise contract, with question id `relevance`:
+
+```json
+{"input": {"state": {"question": "...", "document": "<rendered document>"},
+           "questions": {"relevance": {"type": "choice", "instructions": "...",
+                                       "criteria": {"opt_keep": "...", "opt_drop": "..."}}}},
+ "policy": {"executionTimeout": 60000, "ttl": 600000}}
+```
+
+A valid job has `output.answers.relevance = {"type": "choice", "choice": ..., "probabilities": {"opt_keep": p,
+"opt_drop": q}}` (finite, in [0, 1], sum 1 +- 0.01, choice = unique argmax). Probabilities are read by option id,
+never by position, and never renormalized. An exact 0.5 / 0.5 tie has no model label but keeps its score.
+
+### Limits, stops and budget
+
+Everything is validated before the first call; one problem refuses the whole input with `FilterInputError`
+(0 submissions). Nothing is truncated.
+
+| `FilterLimits` field | Default | Over the limit |
+|---|---|---|
+| `max_docs` (per `filter()` call) | 50 | refused |
+| `max_question_bytes` | 8,000 | refused |
+| `max_title_bytes` / `max_url_bytes` / `max_text_bytes` | 1,000 / 2,048 / 20,000 | refused (`oversize='reject'`, default) or kept unscored as `over_limit` (`oversize='flag'`) |
+| `max_body_bytes` (one wire body) | 200,000 | as the per-document limits |
+
+Missing, empty or duplicate ids, non-string fields and empty text are refused the same way.
+
+One `ContextFilter` is one run: `budget_cap_usd` and `max_submissions` cover all its `filter()` calls. The estimate
+is the RunGate time estimate for the choice endpoint (wall clock since the first submission + 60 s idle allowance +
+661 s reservation per open job, times your rate); it is client-side, not the bill. Submissions stop, and every later
+document is `not_scored` / `not_submitted` and kept, after: the cap or the submission limit would be exceeded; a job
+not observed final (HTTP error, timeout, unresolved queue; its reservation stays held); a final job without server
+execution time (cost unknown); a contract failure; a local configuration failure (nothing sent, nothing held).
+Format failures and handler errors of completed jobs are settled; that document is kept as `error` and the run goes
+on. Retries 0.
+
+### Concurrency
+
+Default `concurrency=1`: one request at a time, in input order. `concurrency=N` (opt-in) runs at most N requests in
+a thread pool. Each submission is admitted by one atomic check-and-reserve against the cap and the submission limit;
+after a stop nothing new is admitted; requests already in flight are waited for and settled; results are restored to
+input order; a partial failure affects only its document plus the stop rule above. This is tested with fake barriers
+only. No latency improvement is claimed: parallel behaviour and numeric stability of a real server were not tested.
+
+### Logging (local estimate, not billing)
+
+Each `filter()` emits one INFO record on the logger `judge_adapter.context_filter` (also in `FilterResult.reduction`):
+documents in / out, UTF-8 bytes of document text in / out, status counts, stop code, mock flag. With
+`tokenizer=` (an object with `name`, `version`, `count(text) -> int`) it adds text token counts in / out and the
+tokenizer name and version; without one, tokens are reported as unsupported. These are **local estimates of document
+text reduction**, not billed usage, not all-turn cached / uncached / output usage of your agent, and they are never
+converted into money. The record holds no question, no document text, no ids and no keys. Note that `httpx` logs request
+URLs (which include your endpoint ID) at INFO; keep the `httpx` logger at WARNING if your logs are shared.
+
+### Who is responsible for what
+
+- The package: validation before any call, one call per document through the existing choice-endpoint client, strict
+  restoration, the policy decision, fail-open rows, run-wide stops, order restoration, the result record.
+- The caller: storing the original documents and restoring them by id (`select_originals` helps; a tool can serve
+  dropped ids on request, as in the example); choosing a policy; the endpoint, model, rate and caps; deciding whether
+  filtering helps their task.
+- Not verified: filter quality on your data, any model, task improvement, cost or latency savings. The tests use fake
+  transports only; this module has not been run against a real model by this package.
+
 ## Backends and configuration
 
 | Backend | Endpoint | Key | Output |
@@ -296,6 +448,8 @@ markers in the judged answers:
 | `FAKE:QUEUE` | choice_endpoint: one status poll of the same job |
 | `FAKE:LEAK` | the fake server echoes the auth header (scrubbing check) |
 
+The context filter's fake (`fakes.FakeRelevanceEndpoint`) reads only the rendered document: `[[KEEP=p]]` sets P(keep) = p, `[[RELEVANT]]` 0.9, otherwise 0.1; `FAKE:HTTP500`, `FAKE:TIMEOUT`, `FAKE:FORMAT`, `FAKE:REFUSE`, `FAKE:QUEUE` as above; `FAKE:NOTIMING` omits the server timing (cost unknown).
+
 Usage numbers in fake runs are invented. Identical fake results in both directions show that ids are restored
 across the swap; they are **not evidence that a real model is order-invariant**.
 
@@ -320,8 +474,8 @@ variables are removed for each test.
 - **Tests are mock tests.** This package's test suite runs only against fake transports. An earlier experiment
   version of this code made a 16-call real smoke run (8 Haiku, 8 choice-endpoint calls) through FastChat; that result applies to that
   experiment version, **not to this package**. This package itself has not been run against a real model or API.
-- Requests run sequentially; no parallelism, no resume. Two turns at most. Custom option ids and score scales are
-  not supported.
+- Pairwise requests run sequentially; no parallelism, no resume. Two turns at most. Custom option ids and score
+  scales are not supported. The context filter has opt-in bounded concurrency (default 1), tested with fakes only.
 
 ## 한국어 요약
 
@@ -343,6 +497,18 @@ variables are removed for each test.
   자동으로 채우지 않는다. 누락·turn 불일치 등은 호출 전에 거부한다. 임시 작업 폴더는 symlink를 쓰며, symlink가
   없는 환경(일부 Windows)은 확인하지 않았다. host single 모드 참고답 채점은 계속 차단한다. host 템플릿은 재현이
   아니라 교체한다. FastChat·MT-Bench 데이터는 패키지에 포함하지 않는다.
+- **컨텍스트 필터:** `judge_adapter.context_filter`는 질문 하나와 문서들(id·title·url·text)을 받아 문서마다
+  `choice_endpoint`에 한 번 묻고, 입력 순서대로 문서별 P(keep)·상태(ok / error 사유 / not_scored)·근거와
+  `selected_ids`를 돌려준다. 정책은 명시해야 한다(`threshold(t)`, `top_k(k)`, `disabled()` 또는 preset; 기본 정책 없음,
+  `transport`와 같은 관례). 실패·미전송 문서는 지우지 않고 keep(fail-open)하며 상태로 이유를 보인다. 선택이 없으면 빈
+  목록이다. 입력 오류·크기 초과는 호출 전에 거부한다(자르지 않음; 문서 크기 초과는 `oversize='flag'`로 미채점 keep
+  가능). 비용 상한·제출 상한은 인스턴스 전체에 걸치며, 비용 불명·미정산 job·계약/설정 실패·상한에서 추가 제출을
+  멈춘다. 동시성 기본 1, 상한 있는 동시성은 opt-in이며 fake barrier로만 검사했다(지연 개선 주장 없음). 원문 보관·복구는
+  호출자 책임이다(`select_originals`). 로그는 문서 수·텍스트 bytes(토크나이저를 주면 토큰 수와 이름·버전)만 남기는
+  로컬 추정이며 과금 usage나 절감액이 아니다. 질문·원문·id·키는 기본 로그에 없다.
+- **preset `v1-thr0.3-dev`:** 영어 V1 지시문·선택지, 실험 때의 문서 템플릿, `threshold(0.3)`, 시험한 크기 범위를 묶은
+  opt-in 이름이다. 25문항에서 한 번 검증한 개발 후보이며 품질 보장이 아니다. 근거 자료는 비공개 연구 문서에 있고
+  패키지에 넣지 않았다. 기본값이 아니며 결과는 사용자가 띄운 모델에 따라 달라진다.
 - **한계:** 품질 우위·절감 보장·범용 host 정책 보존을 주장하지 않는다. 이 패키지의 검사는 fake transport만
   쓴다. 과거 16회 실제 smoke는 실험 버전에 대한 결과이며 이 패키지의 실제 실행 결과가 아니다. fake에서 두 방향
   결과가 같다는 것은 실제 모델의 순서 불변성 증거가 아니다. 비용은 클라이언트 추정이며 청구액이 아니다.

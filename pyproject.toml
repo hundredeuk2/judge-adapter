@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "judge-adapter"
 version = "0.1.0"
-description = "Pairwise LLM-judge call adapter: fixed options, retries 0, run-wide client-side limits, JSONL CLI, optional FastChat binding."
+description = "Pairwise LLM-judge call adapter: fixed options, retries 0, run-wide client-side limits, JSONL CLI, optional FastChat binding, and a retrieval context filter."
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]
@@ -59,6 +59,7 @@ packages = ["src/judge_adapter"]
 include = [
     "/src",
     "/tests",
+    "/examples",
     "/README.md",
     "/LICENSE",
     "/NOTICE",

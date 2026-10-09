@@ -103,10 +103,17 @@ def semantic(question_turns, slot1_turns, slot2_turns, turn, instructions=None, 
             'criteria': dict(criteria or CRITERIA)}
 
 
+def question_id(sem):
+    """The choice question id of a semantic input: 'preference' (pairwise; the key is absent from a pairwise semantic
+    input, so pairwise bodies and semantic hashes are unchanged) or the id another task sets (context filter:
+    'relevance')."""
+    return sem.get('question_id', QUESTION_ID)
+
+
 def choice_body(sem):
     return {'input': {'state': dict(sem['state']),
-                      'questions': {QUESTION_ID: {'type': 'choice', 'instructions': sem['instructions'],
-                                                  'criteria': dict(sem['criteria'])}}},
+                      'questions': {question_id(sem): {'type': 'choice', 'instructions': sem['instructions'],
+                                                       'criteria': dict(sem['criteria'])}}},
             'policy': dict(CHOICE_POLICY)}
 
 
@@ -132,8 +139,9 @@ def _finite_prob(x):
         0.0 <= x <= 1.0 + PROB_VALUE_SLACK
 
 
-def restore_choice(resp, to_label):
-    """resp: JSON of a COMPLETED job. to_label: criterion id -> label (response id or 'tie')."""
+def restore_choice(resp, to_label, question_id=QUESTION_ID):
+    """resp: JSON of a COMPLETED job. to_label: criterion id -> label (pairwise: response id or 'tie'; context filter:
+    'keep' / 'drop'). question_id: the answers key to read (pairwise default 'preference')."""
     out = resp.get('output') if isinstance(resp, dict) else None
     if not isinstance(out, dict):
         return {'status': 'invalid', 'why': 'no output object'}
@@ -142,9 +150,9 @@ def restore_choice(resp, to_label):
     if out.get('truncated') or out.get('is_truncated'):
         return {'status': 'truncated', 'why': 'truncated flag'}
     answers = out.get('answers')
-    ans = answers.get(QUESTION_ID) if isinstance(answers, dict) else None
+    ans = answers.get(question_id) if isinstance(answers, dict) else None
     if not isinstance(ans, dict):
-        return {'status': 'invalid', 'why': f'no answers.{QUESTION_ID}'}
+        return {'status': 'invalid', 'why': f'no answers.{question_id}'}
     if ans.get('truncated') or ans.get('error'):
         return {'status': 'truncated' if ans.get('truncated') else 'handler_error', 'why': 'answer-level flag'}
     probs = ans.get('probabilities')

@@ -280,7 +280,7 @@ class ChoiceEndpointBackend(_Base):
             return done(outcome=C.HTTP, detail=f'unknown job status {str(st)[:40]}')
         if self.expected_model is not None and o.get('model') != self.expected_model:
             return done(outcome=C.CONTRACT, detail=f'output.model {o.get("model")!r} != {self.expected_model!r}')
-        r = P.restore_choice(js, to_label)
+        r = P.restore_choice(js, to_label, P.question_id(sem))
         out['probabilities'] = r.get('probabilities')
         if r['status'] == 'ok':
             return done(outcome='ok', label=r['label'], detail=None)

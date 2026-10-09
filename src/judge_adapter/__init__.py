@@ -5,6 +5,7 @@
 Backends: ``haiku_direct`` (default; Anthropic Messages API) and ``choice_endpoint`` (a user-served choice-judge
 worker on RunPod serverless, configured explicitly).
 Transport ``fake`` runs fully in-process (no key, no network). See README.md.
+Context / retrieval filter (choice_endpoint only, explicit policy required): ``judge_adapter.context_filter``.
 """
 __version__ = '0.1.0'
 

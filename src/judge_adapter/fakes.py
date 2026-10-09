@@ -17,6 +17,7 @@ No network, no key, no model. Usage numbers are invented (chars / 4) and are not
 """
 from __future__ import annotations
 
+import itertools
 import json
 import re
 
@@ -136,6 +137,75 @@ class FakeChoiceEndpoint(_Fake):
             job = path.rsplit('/', 1)[-1]
             state, leak = self.jobs[job]
             return httpx.Response(200, json=self._completed(job, state, leak))
+        if '/cancel/' in path:
+            return httpx.Response(200, json={'id': path.rsplit('/', 1)[-1], 'status': 'CANCELLED'})
+        return httpx.Response(404, text='unknown fake path')
+
+
+_KEEP_RE = re.compile(r'\[\[KEEP=([0-9]*\.?[0-9]+)\]\]')
+
+
+class FakeRelevanceEndpoint(_Fake):
+    """Fake choice endpoint for the context filter (question id from the request; options opt_keep / opt_drop).
+
+    Reads markers in the rendered document only (never the question):
+      [[KEEP=p]]     P(keep) = p exactly, P(drop) = 1 - p; choice = the larger one (p = 0.5 -> exact tie)
+      [[RELEVANT]]   P(keep) = 0.9; no marker -> P(keep) = 0.1
+      FAKE:HTTP500 / FAKE:TIMEOUT   HTTP 500 / transport timeout (job never observed final)
+      FAKE:FORMAT    probabilities that do not sum to 1 (format failure, job completed)
+      FAKE:REFUSE    handler error (job completed)
+      FAKE:QUEUE     runsync returns IN_QUEUE; the next status poll returns COMPLETED
+      FAKE:NOTIMING  completed without delayTime / executionTime (cost unknown)
+    Usage numbers are invented (chars / 4). Not a model; not a cost.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.jobs = {}
+        self._ids = itertools.count(1)     # thread-safe job numbering (the filter may run calls concurrently)
+        self.bodies = []            # request bodies, for wire checks in tests
+
+    def _completed(self, job_id, body):
+        qid = next(iter(body['input']['questions']))
+        doc = body['input']['state']['document']
+        output = {'model': FAKE_CHOICE_MODEL, 'latency_ms': 400,
+                  'usage': {'input_tokens': sum(len(v) for v in body['input']['state'].values()) // 4,
+                            'output_tokens': 0}}
+        if 'FAKE:REFUSE' in doc:
+            output['error'] = 'fake handler error'
+        elif 'FAKE:FORMAT' in doc:
+            output['answers'] = {qid: {'type': 'choice', 'choice': 'opt_keep',
+                                       'probabilities': {'opt_keep': 0.3, 'opt_drop': 0.2}}}
+        else:
+            m = _KEEP_RE.search(doc)
+            p = float(m.group(1)) if m else (0.9 if '[[RELEVANT]]' in doc else 0.1)
+            probs = {'opt_keep': p, 'opt_drop': 1.0 - p}
+            output['answers'] = {qid: {'type': 'choice', 'choice': 'opt_keep' if p >= 0.5 else 'opt_drop',
+                                       'probabilities': probs}}
+        js = {'id': job_id, 'status': 'COMPLETED', 'delayTime': 100, 'executionTime': 500, 'output': output}
+        if 'FAKE:NOTIMING' in doc:
+            del js['delayTime'], js['executionTime']
+        return js
+
+    def handle(self, request):
+        self.requests.append((request.method, request.url.path))
+        path = request.url.path
+        if '/runsync' in path:
+            body = json.loads(request.content)
+            self.bodies.append(body)
+            doc = body['input']['state']['document']
+            if 'FAKE:TIMEOUT' in doc:
+                raise httpx.ReadTimeout('fake timeout', request=request)
+            if 'FAKE:HTTP500' in doc:
+                return httpx.Response(500, text='fake upstream error')
+            job = f'fake-job-{next(self._ids)}'
+            if 'FAKE:QUEUE' in doc:
+                self.jobs[job] = body
+                return httpx.Response(200, json={'id': job, 'status': 'IN_QUEUE'})
+            return httpx.Response(200, json=self._completed(job, body))
+        if '/status/' in path:
+            job = path.rsplit('/', 1)[-1]
+            return httpx.Response(200, json=self._completed(job, self.jobs[job]))
         if '/cancel/' in path:
             return httpx.Response(200, json={'id': path.rsplit('/', 1)[-1], 'status': 'CANCELLED'})
         return httpx.Response(404, text='unknown fake path')
