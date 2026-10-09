@@ -12,6 +12,11 @@
 The transport is injectable (httpx.MockTransport in tests). With no transport, a real httpx transport with
 retries=0 is used. The key provider is called lazily at the first request only.
 
+Provider responses are parsed from the raw body. Scrubbing (the key, bearer tokens, key-like substrings) is applied
+only on output paths: ``detail`` / error strings, and everything a trace writer stores. In-memory provider data
+returned to the caller (parsed fields, ``raw_text``, ``exchanges[].text``) is unmodified, so a key-like substring
+that is part of a legitimate payload is never rewritten before parsing or reuse.
+
 A failure BEFORE any HTTP transmission (key provider error, missing key, client construction) is outcome
 local_config with submissions 0, and the backend then refuses every later call of the run without retrying the key
 read. Failures after transmission started (timeout, communication error) keep submissions 1 and unknown cost.
@@ -111,7 +116,7 @@ class _Base:
             rec.update(outcome='comm_error', error=self.scrub.text(f'{type(e).__name__}: {str(e)[:200]}'),
                        seconds=self.clock() - t)
             return rec
-        text = self.scrub.text(r.content.decode('utf-8', 'replace'))
+        text = r.content.decode('utf-8', 'replace')      # the provider body as received: parsed, never rewritten
         try:
             js = json.loads(text)
         except ValueError:
@@ -119,6 +124,18 @@ class _Base:
         rec.update(outcome='http', http_status=r.status_code, text=text, json=js if isinstance(js, dict) else None,
                    seconds=self.clock() - t)
         return rec
+
+    def call(self, sem, to_label):
+        """One judged call. Provider data in the result (parsed fields, ``raw_text``, ``exchanges[].text`` /
+        ``json``) is the response as received. ``detail`` is an error message and is scrubbed here; trace writers
+        scrub everything they store."""
+        r = self._call(sem, to_label)
+        if isinstance(r.get('detail'), str):
+            r['detail'] = self.scrub.text(r['detail'])
+        return r
+
+    def _call(self, sem, to_label):
+        raise NotImplementedError
 
 
 class HaikuDirectBackend(_Base):
@@ -131,7 +148,7 @@ class HaikuDirectBackend(_Base):
     def rendered_input(self, sem):
         return P.haiku_text(sem)
 
-    def call(self, sem, to_label):
+    def _call(self, sem, to_label):
         body = P.haiku_body(sem)
         bad = check_haiku_body(body)
         if bad:
@@ -207,7 +224,7 @@ class ChoiceEndpointBackend(_Base):
     def rendered_input(self, sem):
         return P.haiku_text(sem)    # text view of the same semantic input, for the host's prompt field only
 
-    def call(self, sem, to_label):
+    def _call(self, sem, to_label):
         body = P.choice_body(sem)
         t_sub = self.clock()
         if self.urls is None or self.usd_per_second is None:   # checked before any key read; nothing is sent

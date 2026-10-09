@@ -36,7 +36,7 @@ from . import contract as C
 from . import prompt as P
 from . import user_prompt as U
 from .contract import AdapterConfig, JudgeRequest, Response
-from .core import JudgeAdapter, TraceWriter, build_backend
+from .core import JudgeAdapter, TraceWriter, build_backend, scrubber_of
 from .gate import JOB_RESERVATION_SECONDS, IDLE_ALLOWANCE_SECONDS, RunGate, haiku_reservation_usd  # noqa: F401
 
 SCHEMA = 'judge-adapter-pairs/v2'       # v2: optional rubric + reference (v1 files stay valid)
@@ -272,8 +272,8 @@ class RunTraceWriter(TraceWriter):
     """The adapter's trace writer plus run_id / backend / transport on every raw record (CLI only; the adapter core
     and the FastChat path keep their own writer unchanged)."""
 
-    def __init__(self, trace_dir, run_id, backend, transport):
-        super().__init__(trace_dir)
+    def __init__(self, trace_dir, run_id, backend, transport, scrub=None):
+        super().__init__(trace_dir, scrub)
         self.tag = {'run_id': run_id, 'backend': backend, 'transport': transport}
         if transport == 'fake':
             self.tag['mock_note'] = 'MOCK: in-process fake transport; the URLs below were never contacted'
@@ -355,7 +355,8 @@ def run_file(input_path, out_dir, *, transport, backend='haiku_direct', mode='si
     be = build_backend(cfg, transport=fake.transport() if is_fake else None, key_provider=key_provider, clock=clock)
     gate = RunGate(be, mode, budget_cap_usd, max_submissions or pl['planned_max_submissions'], clock=clock)
     adapter = JudgeAdapter(cfg, gate, clock=clock)
-    adapter.trace = RunTraceWriter(cfg.trace_dir, run_id, be.name, transport)
+    scrub = scrubber_of(be)          # saved files are scrubbed; in-memory results keep provider data as received
+    adapter.trace = RunTraceWriter(cfg.trace_dir, run_id, be.name, transport, scrub)
     rows, t0 = [], clock()
     results_path = out / 'results.jsonl'
     interrupted = None
@@ -367,7 +368,7 @@ def run_file(input_path, out_dir, *, transport, backend='haiku_direct', mode='si
                 row = {'run_id': run_id, 'input_line': line_no, 'outcome': _outcome(res), 'mock': is_fake,
                        **({'mock_note': MOCK_NOTE} if is_fake else {}), **res.to_dict()}
                 rows.append(row)
-                rf.write(json.dumps(row, ensure_ascii=False, default=str) + '\n')
+                rf.write(scrub.text(json.dumps(scrub.obj(row), ensure_ascii=False, default=str)) + '\n')
                 rf.flush()
         except KeyboardInterrupt:
             interrupted = 'KeyboardInterrupt'
@@ -383,7 +384,8 @@ def run_file(input_path, out_dir, *, transport, backend='haiku_direct', mode='si
                 rf.write(json.dumps(row, ensure_ascii=False) + '\n')
     total = clock() - t0
     snap = gate.snapshot()
-    (out / 'gate.json').write_text(json.dumps(snap, ensure_ascii=False, indent=1, default=str) + '\n', encoding='utf-8')
+    (out / 'gate.json').write_text(scrub.text(json.dumps(scrub.obj(snap), ensure_ascii=False, indent=1, default=str))
+                                   + '\n', encoding='utf-8')
     summary = summarize(rows, pl, snap, in_path, out, cfg, be, is_fake, total, interrupted, run_id)
     (out / 'summary.json').write_text(json.dumps(summary, ensure_ascii=False, indent=1) + '\n', encoding='utf-8')
     return summary

@@ -11,6 +11,19 @@ Fixed on purpose:
 - **Nothing is dropped silently.** One output row per input document, in input order. A document that fails (HTTP,
   timeout, format, budget stop, over-limit when flagged) is kept (fail-open) and its status says why. Input with
   missing / duplicate ids or over-limit sizes is refused before any call (``FilterInputError``); nothing is truncated.
+- **Fail-open is per document.** An error or an unusable answer (format failure, handler error, truncation, an
+  unexpected client exception) keeps that one document (status ``error``); the other documents are decided normally.
+  The whole ``filter()`` call raises, with no result, only for invalid input (``FilterInputError``, before any call),
+  or when a caller-supplied ``tokenizer`` / ``logger`` raises. An exact 0.5 / 0.5 answer keeps its score.
+- **Zero kept is a normal result.** With a threshold policy every scored document can be dropped: ``selected_ids`` is
+  then ``[]`` (not an error). There is no fallback document, minimum keep count or re-search; the caller decides what
+  to do with an empty selection. One observed run (HLE, 90 English questions, GPT-5.2 agent, 5 documents per search,
+  preset ``v1-thr0.3-dev``) dropped all 5 documents in 25 of 72 searches: a per-search count from a single run, not a
+  general rate.
+- **Opt-in input reduction, no quality or total-cost claim.** In that single run agent input tokens were about 44%
+  lower than a top-3 baseline with similar accuracy (difference within uncertainty), and no total-cost reduction was
+  observed because generator output grew. Not a guarantee. The filter-call price is the rate you configure, separate
+  from the model you actually serve.
 - **Originals stay with the caller.** The filter returns ids, never rewritten text. The caller stores the original
   documents and restores them by id (``select_originals``).
 - **Run-wide limits.** One ``ContextFilter`` is one run: its client-side cost cap and submission limit are not reset
@@ -39,6 +52,7 @@ from dataclasses import dataclass, field
 
 from . import contract as C
 from . import prompt as P
+from .core import scrubber_of
 from .gate import IDLE_ALLOWANCE_SECONDS, JOB_RESERVATION_SECONDS, JobTime
 from .user_prompt import LIMITS as _PAIR_LIMITS
 from .user_prompt import sha_text
@@ -355,6 +369,10 @@ class ContextFilter:
     cannot be combined with it); ``limits`` defaults to the preset's and may be overridden (recorded in the result). A real transport needs ``budget_cap_usd`` and
     ``max_submissions`` unless the policy is ``disabled()``.
     ``tokenizer``: optional object with ``name``, ``version`` and ``count(text) -> int`` for the local reduction log.
+
+    ``filter()`` is fail-open per document (an error or unusable answer keeps that document) and may return an empty
+    ``selected_ids`` under a threshold policy; the caller decides what to do then. Scores and provenance hold the
+    provider's data as received; only error ``detail`` strings are scrubbed (see the backends module).
     """
 
     def __init__(self, cfg, backend, *, policy=None, preset=None, prompt=None, limits=None, budget_cap_usd=None,
@@ -462,7 +480,9 @@ class ContextFilter:
         p = (probs or {}).get('keep')
         score = float(p) if isinstance(p, (int, float)) and not isinstance(p, bool) else None
         return {'record': rec, 'score': score, 'semantic_sha256': P.sha(sem),
-                'raw_output_sha256': sha_text(r['raw_text']) if r.get('raw_text') is not None else None,
+                # hash of the scrubbed body (as before the raw-parse fix); the score comes from the raw body
+                'raw_output_sha256': sha_text(scrubber_of(self.backend).text(r['raw_text']))
+                if r.get('raw_text') is not None else None,
                 'cost_usd': self.backend.cost([rec]) if rec.submissions else 0.0}
 
     def _score(self, call_no, question, todo):

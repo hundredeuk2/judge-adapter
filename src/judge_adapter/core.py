@@ -23,17 +23,28 @@ from . import contract as C
 from . import prompt as P
 from . import user_prompt as U
 from .backends import ChoiceEndpointBackend, HaikuDirectBackend
-from .keys import default_provider
+from .keys import Scrubber, default_provider
 
 
 def _sha_text(s):
     return hashlib.sha256(s.encode('utf-8')).hexdigest() if s is not None else None
 
 
-class TraceWriter:
-    """judge_trace.jsonl: one JudgeResult per line (no raw text). judge_raw.jsonl: raw HTTP bodies per call."""
+def scrubber_of(backend):
+    """The backend's scrubber (it knows the key once read), or a key-less one that still removes bearer tokens and
+    key-like substrings (custom backends)."""
+    sc = getattr(backend, 'scrub', None)
+    return sc if isinstance(sc, Scrubber) else Scrubber()
 
-    def __init__(self, trace_dir):
+
+class TraceWriter:
+    """judge_trace.jsonl: one JudgeResult per line (no raw text). judge_raw.jsonl: HTTP bodies per call.
+
+    Everything written is scrubbed (the key, bearer tokens, key-like substrings), so a stored body can differ from
+    the in-memory response; ``raw_output_sha256`` is the hash of the stored (scrubbed) body."""
+
+    def __init__(self, trace_dir, scrub=None):
+        self.scrub = scrub if scrub is not None else Scrubber()
         self.dir = Path(trace_dir).resolve()     # absolute: hosts may chdir
         self.dir.mkdir(parents=True, exist_ok=True)
         self.trace = self.dir / 'judge_trace.jsonl'
@@ -41,7 +52,7 @@ class TraceWriter:
         self._lock = threading.Lock()      # host may judge in threads (FastChat --parallel)
 
     def _append(self, path, rec):
-        line = json.dumps(rec, ensure_ascii=False, default=str) + '\n'
+        line = self.scrub.text(json.dumps(self.scrub.obj(rec), ensure_ascii=False, default=str)) + '\n'
         with self._lock, open(path, 'a', encoding='utf-8') as f:
             f.write(line)
 
@@ -94,7 +105,7 @@ class JudgeAdapter:
         self.cfg = cfg
         self.backend = backend
         self.clock = clock
-        self.trace = TraceWriter(cfg.trace_dir)
+        self.trace = TraceWriter(cfg.trace_dir, scrub=scrubber_of(backend))
         self._local = threading.local()     # per-thread: the text view of the last request (host prompt field)
 
     @property
@@ -148,10 +159,14 @@ class JudgeAdapter:
                            submissions=r.get('submissions', 0), status_polls=r.get('status_polls', 0),
                            cancels=r.get('cancels', 0), http_status=r.get('http_status'),
                            client_seconds=r.get('client_seconds'), server_timing=r.get('server_timing'),
-                           usage=r.get('usage'), raw_output_sha256=_sha_text(r.get('raw_text')),
+                           usage=r.get('usage'), raw_output_sha256=self._recorded_sha(r.get('raw_text')),
                            raw_output_pointer=pointer, response_model=r.get('response_model'), job_id=r.get('job_id'),
                            job_status=r.get('job_status'), job_final=r.get('job_final'), gate=r.get('gate'))
         return rec, P.sha(sem)
+
+    def _recorded_sha(self, raw_text):
+        """Hash of the body as stored in judge_raw.jsonl (scrubbed), unchanged from before the raw-parse fix."""
+        return _sha_text(self.trace.scrub.text(raw_text)) if raw_text is not None else None
 
     def judge(self, req):
         t0 = self.clock()

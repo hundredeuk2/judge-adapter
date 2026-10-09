@@ -113,6 +113,10 @@ class RunGate:
     def rendered_input(self, sem):
         return self.inner.rendered_input(sem)
 
+    @property
+    def scrub(self):
+        return getattr(self.inner, 'scrub', None)
+
     def cost(self, calls):
         return self.inner.cost(calls)
 

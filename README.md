@@ -22,8 +22,9 @@ What it keeps fixed on purpose:
 - **Unknown cost stays unknown.** A submitted call without usage/timing has cost `null`, not `0`.
 - **Failures before transmission send nothing.** A missing key, missing choice endpoint ID or rate, or a client setup error is
   `local_config` with 0 submissions, and the run stops.
-- **Keys are never written.** Raw HTTP bodies and logs go through a scrubber (exact key value, `Bearer ...`,
-  `sk-...`, `rpa_...`).
+- **Keys are never written.** Stored traces, CLI output files, error details and logs go through a scrubber (exact
+  key value, `Bearer ...`, `sk-...`, `rpa_...`). Provider responses are parsed from the raw body, never from the
+  scrubbed copy (see [Raw responses and stored traces](#raw-responses-and-stored-traces)).
 - **No silent overwrite.** An output directory with results is refused unless `--overwrite`.
 - **Rubric / reference are recorded.** Every result carries the prompt version and the sha256 of the rubric and
   reference that were sent.
@@ -132,7 +133,8 @@ judge-adapter examples
 
 Output: `results.jsonl` (one row per input line: `outcome` ok / tie / error / unrun, `verdict`, `winner_id`,
 `tie_kind`, `failure`, `calls[]`, `cost_estimate`, `criteria_info`), `summary.json`, `gate.json` (run-wide limit
-log), `trace/judge_trace.jsonl`, `trace/judge_raw.jsonl` (raw HTTP bodies, keys removed). No success rate is
+log), `trace/judge_trace.jsonl`, `trace/judge_raw.jsonl` (HTTP bodies, keys removed). All output files are
+scrubbed, so a stored body can differ from what the provider sent. No success rate is
 reported; every request is counted, including errors and unrun requests.
 
 ## Python API
@@ -158,6 +160,30 @@ For a real call use `AdapterConfig(transport='real', ...)` and `build_backend(cf
 run-wide limits in your own loop, wrap the backend in `judge_adapter.RunGate(backend, mode, cap_usd,
 max_submissions)` and call `gate.begin(request)` before each `adapter.judge(request)`; `judge_adapter.cli.run_file`
 does exactly this.
+
+### Raw responses and stored traces
+
+Provider responses are parsed from the body **as received**. Scrubbing (your exact key, `Bearer ...`, and key-like
+substrings `sk-...` / `rpa_...`) is applied only where data leaves the process or is written down:
+
+| Where | Content |
+|---|---|
+| In-memory results: `JudgeResult` / `CallRecord` fields parsed from the response (`label`, `usage`, `response_model`, `job_id`, `job_status`, `server_timing`), `FilterResult` scores and provenance, a backend's `call()` result (`raw_text`, `exchanges[].text`, `exchanges[].json`) | the provider's data, unmodified |
+| `detail` / `failure.detail` and `exchanges[].error` (error messages, including text taken from provider error bodies) | scrubbed |
+| `trace/judge_raw.jsonl`, `trace/judge_trace.jsonl`, CLI `results.jsonl` and `gate.json` | scrubbed (the whole record) |
+| The context filter's INFO log | counts and sizes only |
+
+Why: a legitimate payload can contain a key-like substring by chance. A URL-safe base64 value (for example an
+opaque `encrypted_content` blob that a caller replays to the provider) may contain `-sk-` followed by 8+ characters;
+scrubbing before parsing rewrote it to `[redacted]` and corrupted the value. Since this fix, values inside any JSON
+string reach the caller byte-for-byte.
+
+Compatibility: no signature changed. Before the fix, a response value that matched the scrubber came back with
+`[redacted]` in it; it now comes back as sent. The stored files are unchanged in kind (scrubbed) and now scrub the
+whole record, not only the HTTP body. `raw_output_sha256` keeps its meaning: the sha256 of the **stored (scrubbed)**
+body in `judge_raw.jsonl`, so it can be checked against that file; it equals the hash of the received body whenever
+nothing was scrubbed. If you log or save in-memory results yourself, scrub them first (`judge_adapter.keys.Scrubber`;
+a backend's `scrub` attribute knows the key after the first request).
 
 ## Context filter (retrieval documents)
 
@@ -224,6 +250,38 @@ built or sent. `policy=disabled()` is the explicit off switch: zero model calls,
 
 Under every policy a document without a score (error, not submitted, over the limit when flagged) is **kept**
 (fail-open; under `top_k` on top of the k) and its status shows why. Rows are never removed.
+
+**Scope of fail-open (as implemented).** Fail-open is **per document**: an HTTP error, a timeout, an unusable
+answer (format failure, handler error, truncation, invalid probabilities) or an unexpected client exception during
+that document's call keeps that one document with status `error`; a run-wide stop keeps every later document as
+`not_scored` / `not_submitted`. The other documents of the same `filter()` call are decided normally. An exact
+0.5 / 0.5 answer is not a failure: it keeps its score and the policy decides. The whole call is refused, with an
+exception and no result, only in these cases: invalid input (`FilterInputError`, raised before any call, 0
+submissions), invalid constructor arguments (`ValueError`), or an exception raised by a caller-supplied `tokenizer`
+or `logger`.
+
+**Zero kept is a normal result.** With `threshold(t)` every scored document can fall below `t`; the result is then
+`selected_ids == []` (an empty selection, not an error), and the rows show `status='ok'`, `decision='drop'`. The
+package adds no fallback document, no minimum keep count and no re-search; what to do with an empty selection is the
+caller's decision (for example, use the unfiltered documents, retry the search, or proceed without documents). In
+one observed run (see below) this happened in 25 of 72 searches with the preset `v1-thr0.3-dev`; that is a
+per-search count from a single run, not a general drop rate or failure rate. `top_k(k)` with k >= 1 never returns an
+empty selection when at least one document was scored.
+
+### Observed effect (one run, not a guarantee)
+
+A single run outside this package's test suite: 90 English questions from HLE (Humanity's Last Exam), a GPT-5.2
+agent whose search returned 5 documents, the preset `v1-thr0.3-dev`, compared with keeping the top 3 documents.
+
+- Agent input tokens were about 44% lower than with the top-3 baseline.
+- Accuracy was similar to top-3; the difference was within the uncertainty of one run.
+- No total-cost reduction was observed in that run: the generator's output grew and offset the input saving.
+- All 5 documents were dropped in 25 of the 72 searches that run made.
+
+Total cost depends on the price you assume for filter calls (`choice_usd_per_second`, your configuration) and on the
+model you actually serve behind the endpoint; the package ties neither to the other, and its estimate is not a bill.
+
+**Intended use:** an opt-in input-reduction tool. It does not claim quality improvement or total-cost savings.
 
 ### Preset `v1-thr0.3-dev` (opt-in)
 
@@ -309,7 +367,7 @@ URLs (which include your endpoint ID) at INFO; keep the `httpx` logger at WARNIN
   dropped ids on request, as in the example); choosing a policy; the endpoint, model, rate and caps; deciding whether
   filtering helps their task.
 - Not verified: filter quality on your data, any model, task improvement, cost or latency savings. The tests use fake
-  transports only; this module has not been run against a real model by this package.
+  transports only; the single observed run above is outside the test suite and is not a verification.
 
 ## Backends and configuration
 
@@ -485,7 +543,8 @@ variables are removed for each test.
 - **설치:** `pip install "judge-adapter @ git+https://github.com/hundredeuk2/judge-adapter"`. 코어 의존성은 `httpx`
   하나다. FastChat은 `[fastchat]` extra이며 commit `587d5cfa`로 고정하고 torch 등 무거운 의존성을 함께 설치한다.
 - **유지하는 동작:** 기본 fake·real은 명시 opt-in(`--allow-real` + `--max-submissions` + `--budget-cap-usd`),
-  재시도 0, 실행 전체 제출·비용 상한, 비용 불명은 `null`, 전송 전 오류는 제출 0(`local_config`), raw·log 키 제거,
+  재시도 0, 실행 전체 제출·비용 상한, 비용 불명은 `null`, 전송 전 오류는 제출 0(`local_config`), 저장 trace·CLI
+  출력·오류 메시지·log 키 제거(응답 파싱은 원문 body로 하고 메모리 결과의 provider 값은 바꾸지 않음),
   결과 덮어쓰기 거부, rubric/reference 전달과 버전·sha256 기록.
 - **키·endpoint:** 키는 환경변수(`ANTHROPIC_API_KEY`, `RUNPOD_API_KEY`) 또는 명시한 env 파일에서만 읽는다. 기본
   파일 경로는 없다. `choice_endpoint` backend(사용자가 RunPod serverless에 직접 띄운 선택지 judge worker)의
@@ -502,10 +561,18 @@ variables are removed for each test.
   `selected_ids`를 돌려준다. 정책은 명시해야 한다(`threshold(t)`, `top_k(k)`, `disabled()` 또는 preset; 기본 정책 없음,
   `transport`와 같은 관례). 실패·미전송 문서는 지우지 않고 keep(fail-open)하며 상태로 이유를 보인다. 선택이 없으면 빈
   목록이다. 입력 오류·크기 초과는 호출 전에 거부한다(자르지 않음; 문서 크기 초과는 `oversize='flag'`로 미채점 keep
-  가능). 비용 상한·제출 상한은 인스턴스 전체에 걸치며, 비용 불명·미정산 job·계약/설정 실패·상한에서 추가 제출을
+  가능). fail-open은 문서 단위다: 그 문서의 호출 오류·쓸 수 없는 답은 그 문서만 keep하고 나머지는 정상 판정한다.
+  입력 오류(`FilterInputError`, 호출 전)·생성자 인자 오류·호출자가 넘긴 tokenizer/logger 예외만 호출 전체를
+  실패시킨다. threshold 정책에서 모든 문서가 drop되면 `selected_ids == []`(오류 아님)이며, 대체 문서·최소 keep·재검색은
+  없고 처리 방법은 호출자가 정한다. 비용 상한·제출 상한은 인스턴스 전체에 걸치며, 비용 불명·미정산 job·계약/설정 실패·상한에서 추가 제출을
   멈춘다. 동시성 기본 1, 상한 있는 동시성은 opt-in이며 fake barrier로만 검사했다(지연 개선 주장 없음). 원문 보관·복구는
   호출자 책임이다(`select_originals`). 로그는 문서 수·텍스트 bytes(토크나이저를 주면 토큰 수와 이름·버전)만 남기는
   로컬 추정이며 과금 usage나 절감액이 아니다. 질문·원문·id·키는 기본 로그에 없다.
+- **관찰 결과(1회, 보장 아님):** 테스트 밖 단일 실행(HLE 영어 90문항, GPT-5.2 agent, 검색당 5문서, preset
+  `v1-thr0.3-dev`)에서 top-3 대비 입력 토큰 약 44% 감소, 정확도는 top-3와 비슷(차이는 불확실성 범위 안), 생성 출력
+  증가로 총비용 감소는 관찰되지 않았다. 72회 검색 중 25회에서 5문서가 모두 drop되었고, 이는 그 실행의 검색 단위 관찰이지
+  일반 drop률·실패율이 아니다. 필터 호출 단가는 사용자가 설정한 가정이며 실제로 띄운 모델과 별개다. 용도는 opt-in 입력
+  축소 도구이며 품질 향상·총비용 절감을 주장하지 않는다.
 - **preset `v1-thr0.3-dev`:** 영어 V1 지시문·선택지, 실험 때의 문서 템플릿, `threshold(0.3)`, 시험한 크기 범위를 묶은
   opt-in 이름이다. 25문항에서 한 번 검증한 개발 후보이며 품질 보장이 아니다. 근거 자료는 비공개 연구 문서에 있고
   패키지에 넣지 않았다. 기본값이 아니며 결과는 사용자가 띄운 모델에 따라 달라진다.
