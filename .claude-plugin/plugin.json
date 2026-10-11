@@ -1,0 +1,93 @@
+{
+  "name": "davi",
+  "version": "0.3.0",
+  "description": "Filters Tavily MCP search results (tavily-mcp 0.2.22, tool tavily_search) before the model reads them: one choice-model call per result scores P(keep), and results below the preset threshold are removed. Other tools, including built-in WebSearch, are not touched. Fail-open: on any error the result is left unchanged.",
+  "author": {
+    "name": "hundredeuk2",
+    "url": "https://github.com/hundredeuk2"
+  },
+  "homepage": "https://github.com/hundredeuk2/judge-adapter",
+  "repository": "https://github.com/hundredeuk2/judge-adapter",
+  "license": "Apache-2.0",
+  "keywords": [
+    "context-filter",
+    "search",
+    "mcp",
+    "tavily",
+    "hooks"
+  ],
+  "userConfig": {
+    "runpod_api_key": {
+      "type": "string",
+      "title": "RunPod API key",
+      "description": "Key for your choice endpoint on RunPod serverless. Stored in secure storage; read by the hook only at its first request.",
+      "sensitive": true
+    },
+    "choice_endpoint_id": {
+      "type": "string",
+      "title": "Choice endpoint ID",
+      "description": "RunPod serverless endpoint ID of your Jev-compatible choice-judge worker.",
+      "sensitive": true
+    },
+    "usd_per_second": {
+      "type": "number",
+      "title": "Endpoint price (USD per second)",
+      "description": "Per-second rate of your endpoint, used for the client-side estimate and cap. Required: without it nothing is sent.",
+      "min": 0
+    },
+    "enabled": {
+      "type": "boolean",
+      "title": "Enable the filter",
+      "description": "Turn the search-result filter on or off without uninstalling.",
+      "default": true
+    },
+    "preset": {
+      "type": "string",
+      "title": "Filter preset",
+      "description": "Named relevance prompt + threshold. Only v1-thr0.3-dev exists (threshold 0.3).",
+      "default": "v1-thr0.3-dev"
+    },
+    "concurrency": {
+      "type": "number",
+      "title": "Concurrent filter calls",
+      "description": "Filter calls in flight at once per search (1-8). Default 1.",
+      "default": 1,
+      "min": 1,
+      "max": 8
+    },
+    "max_docs": {
+      "type": "number",
+      "title": "Max results scored per search",
+      "description": "Results beyond this count are passed through unscored (1-50).",
+      "default": 10,
+      "min": 1,
+      "max": 50
+    },
+    "wall_budget_seconds": {
+      "type": "number",
+      "title": "Time budget per search (seconds)",
+      "description": "After this many seconds the hook gives up and the original result is used (1-60).",
+      "default": 20,
+      "min": 1,
+      "max": 60
+    },
+    "on_all_dropped": {
+      "type": "string",
+      "title": "When every result is dropped",
+      "description": "keep_original (default): show the original results plus a note. drop_all: remove them all.",
+      "default": "keep_original"
+    },
+    "mcp_tools": {
+      "type": "string",
+      "title": "Tool overrides (optional)",
+      "description": "Comma-separated MCP tool names, optionally name=tavily|off. The Tavily tool tavily_search is filtered by default; =off excludes it; another name with =tavily is parsed as Tavily output if a hook routes it here.",
+      "default": ""
+    },
+    "log_file": {
+      "type": "string",
+      "title": "Log file (optional)",
+      "description": "Append one JSON line per search (counts and bytes only, no text or keys). Empty: stderr only.",
+      "default": ""
+    }
+  }
+}

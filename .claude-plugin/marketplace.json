@@ -1,0 +1,15 @@
+{
+  "name": "judge-adapter",
+  "description": "Plugins from the judge-adapter repository.",
+  "owner": {
+    "name": "hundredeuk2",
+    "url": "https://github.com/hundredeuk2"
+  },
+  "plugins": [
+    {
+      "name": "davi",
+      "source": "./",
+      "description": "Filter Tavily MCP search results through a choice model (P(keep) per result); fail-open."
+    }
+  ]
+}

@@ -20,12 +20,13 @@ Fixed on purpose:
   to do with an empty selection. One observed run (HLE, 90 English questions, GPT-5.2 agent, 5 documents per search,
   preset ``v1-thr0.3-dev``) dropped all 5 documents in 25 of 72 searches: a per-search count from a single run, not a
   general rate.
-- **Opt-in input reduction, no quality or total-cost claim.** In that single run, agent input tokens summed over all
-  90 questions were about 44% lower than a top-3 baseline. Quality improvement and equivalence were not established
-  (difference within uncertainty). No total-cost advantage was established: on the post-hoc subset of 86 questions
-  where every compared setting finished, the filtered setting was not cheaper because generator output grew. Not a
-  guarantee. The filter-call price is the rate you configure, separate
-  from the model you actually serve.
+- **Opt-in input reduction, no quality or total-cost claim.** In that single run, on the 86 questions where all
+  compared settings finished, agent input tokens were 31.4% lower than keeping the top 3 documents and 44.9% lower
+  than keeping all 5. (An earlier figure, "about 44% lower than top-3 summed over all 90 questions", counted 4
+  interrupted trajectories as 0 tokens and is withdrawn.) Quality improvement and equivalence were not established
+  (difference within uncertainty). No total-cost advantage was established: on those 86 questions the filtered
+  setting cost 4.5% more than top-3 because generator output grew (+6.7% output tokens). Not a guarantee. The
+  filter-call price is the rate you configure, separate from the model you actually serve.
 - **Originals stay with the caller.** The filter returns ids, never rewritten text. The caller stores the original
   documents and restores them by id (``select_originals``).
 - **Run-wide limits.** One ``ContextFilter`` is one run: its client-side cost cap and submission limit are not reset
