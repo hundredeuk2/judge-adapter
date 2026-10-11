@@ -13,7 +13,7 @@ worth reading.** Also a pairwise LLM-judge adapter with fixed options, retries 0
 | Import | `judge_adapter` |
 | JSONL CLI | `judge-adapter` (also `python -m judge_adapter.cli`) |
 | FastChat wrapper CLI (optional) | `judge-adapter-fastchat` (needs the `fastchat` extra) |
-| Claude Code plugin | `davi` (filters Tavily MCP search results), marketplace `judge-adapter` |
+| Claude Code plugin | `davi` (filters Tavily MCP search results; optional query-stage options, off by default), marketplace `judge-adapter` |
 | License | Apache-2.0 (see `LICENSE` and `NOTICE`) |
 
 ## Installation
@@ -172,8 +172,13 @@ per-result text.
 
 **Built-in WebSearch is not filtered.** In one observed run, Claude Code's built-in WebSearch returned only a title and
 a URL per result (`results: [{tool_use_id, content: [{title, url}, ...]}, "<model-written summary>", ...]`), with no
-per-result text to score. The plugin therefore does not match WebSearch at all, so it adds no start-up latency there.
-(The hook still parses that shape and passes it through unchanged if you route WebSearch to it yourself.)
+per-result text to score. The result filter therefore does not match WebSearch. (The hook still parses that shape and
+passes it through unchanged if you route WebSearch to it yourself.) The only hook that matches WebSearch is the
+PreToolUse launcher of the [optional query-stage options](#optional-query-stage-options-experimental); with both options
+off (the default) it exits before reading its input (about 0.4 ms over a bare Python start, see that section). A
+UserPromptSubmit hook serves only the search gate; with the gate off it exits the same way on every prompt. Inside
+Claude Code, `/davi:status`, `/davi:filter-on`, `/davi:filter-off`, `/davi:gate-on`, `/davi:gate-off`,
+`/davi:domain-on` and `/davi:domain-off` show and switch the features ([Turning features on and off](#turning-features-on-and-off)).
 
 ### Supported search tool
 
@@ -190,8 +195,8 @@ docs is not matched).
   optional `ID:`, `URL:`, `Content:`, optional `Raw Content:` / `Favicon:`, then an optional `Images:` section.
 - Only the `Content` snippet is scored (not `Raw Content`). The header, the `Answer:` summary and the image list are
   kept byte for byte and never scored; no text is generated or summarised.
-- **Zero intervention** for every other tool: other Tavily tools (extract, crawl, map, research), other search MCP
-  servers, read / write tools and the built-in WebSearch. Tests check this.
+- **Zero intervention** by the result filter for every other tool: other Tavily tools (extract, crawl, map, research),
+  other search MCP servers, read / write tools and the built-in WebSearch. Tests check this.
 - A response with `isError: true` or with `structuredContent` is passed through unchanged (the hook could not keep
   `structuredContent` consistent with an edited text block). Other content blocks (text, image, resource) are kept.
 - Not checked: Tavily's hosted remote server (`https://mcp.tavily.com/mcp/`) and other `tavily-mcp` versions.
@@ -250,7 +255,7 @@ them in secure storage, not in `settings.json`. Prefer the dialog for them, so t
 | `runpod_api_key` (sensitive) | none | RunPod API key. Missing → nothing is sent |
 | `choice_endpoint_id` (sensitive) | none | RunPod endpoint ID of your choice worker. Missing → nothing is sent |
 | `usd_per_second` | none | Your endpoint's per-second price, for the client-side estimate and cap. Missing → nothing is sent |
-| `enabled` | `true` | Turn the filter off without uninstalling |
+| `enabled` | `true` | Global switch: `false` turns the filter and both query-stage options off without uninstalling; no toggle overrides it |
 | `preset` | `v1-thr0.3-dev` | Named prompt + threshold; currently the only preset (threshold 0.3) |
 | `concurrency` | `1` | Filter calls in flight per search (1-8) |
 | `max_docs` | `10` | Results scored per search (1-50); later results pass through unscored |
@@ -258,6 +263,16 @@ them in secure storage, not in `settings.json`. Prefer the dialog for them, so t
 | `on_all_dropped` | `keep_original` | `keep_original` or `drop_all` (see below) |
 | `mcp_tools` | empty | Overrides: comma-separated `name` or `name=tavily\|off` |
 | `log_file` | empty | Also append the per-search log line to this file |
+| `search_gate_enabled` | `false` | Experimental search gate before WebSearch / `tavily_search` ([details](#optional-query-stage-options-experimental)) |
+| `search_gate_threshold` | `0.85` | Deny only if P(not needed) ≥ this (0.5-1); pre-fixed, not calibrated |
+| `domain_presets_enabled` | `false` | Experimental domain presets before WebSearch / `tavily_search` |
+| `domain_presets` | empty | Your presets as JSON or a file path; empty = the built-in EXAMPLE presets |
+| `domain_min_confidence` | `0.6` | Apply the chosen preset only if its probability ≥ this (0-1); pre-fixed, not calibrated |
+| `domain_apply_mode` | `ask` | `ask` (documented; you confirm the modified search; in `-p` runs it can block the search) or `input_only` (experimental, undocumented, effect unverified). No allow mode |
+
+The toggle file ([Turning features on and off](#turning-features-on-and-off)) takes precedence over
+`search_gate_enabled`, `domain_presets_enabled` and `domain_apply_mode`, and can switch the filter off, but never over
+`enabled=false`. Keys, the endpoint ID and the rate are set here only.
 
 `mcp_tools`: `mcp__tavily__tavily_search=off` excludes the default tool; `mcp__corp__web_lookup` (or `=tavily`) treats
 another tool name as Tavily output. Claude Code starts the hook only for tools the
@@ -320,6 +335,208 @@ What this does and does not do:
   unsupported or error responses, and every fail-open case below still reach the model unfiltered.
 - The plugin never changes your permissions or settings; this is an opt-in step you take.
 
+### Optional: query-stage options (experimental)
+
+Two options run **before** a search, in a PreToolUse hook on exactly two tools: the built-in `WebSearch` and Tavily
+`tavily_search` (same matcher as the filter). Both are **off by default**, untuned and unvalidated: their prompts
+(`gate-v0-dev`, `domain-v0-dev`, in `src/judge_adapter/query_presets.py`) and thresholds are first drafts with no
+quality claim, and a high probability from your model is not treated as a correct judgment. Each option adds **one
+endpoint call per search** while enabled (two with both), and the search waits for it, up to the wall budget.
+
+**What is sent to your choice endpoint:** the search query only (`tool_input.query`, at most 2,000 bytes; longer
+queries get no decision). For domain presets, also your preset names, descriptions and domain lists. Nothing else: the
+PreToolUse input has no user-message field, and the hook never reads the transcript file. The UserPromptSubmit hook
+(search gate only) reads the user's prompt locally to look for an explicit search request; the prompt is never sent,
+stored or logged. The endpoint is your own; its logs and retention are yours to check.
+
+**Search gate** (`search_gate_enabled`): a default-off **development option**. Its real usefulness, and whether it
+preserves what the user wants, are **unverified**; its prompt and threshold are not tuned, and it never reads the
+transcript. It asks "is this search needed?" with the options needed / not needed /
+cannot tell. It denies the search only if P(not needed) ≥ `search_gate_threshold` (default 0.85). Claude then sees a
+fixed notice (the model's reasoning is never shown or presented as fact):
+
+> davi search gate (experimental, optional): this search was skipped because an automated check rated it as probably
+> unnecessary. This is not a verified judgment. If the user asked for a search, or the answer needs current
+> information, a specific source or verification, retry the same query and it will run. Otherwise answer from the
+> context you already have.
+
+- **Explicit user request, no call (UserPromptSubmit).** A real smoke on 2026-10-11 showed a **semantic failure**
+  that blocks release: with the gate on, the prompt "Using web search, confirm how many days there are in a week.
+  Answer in one sentence." led Claude to WebSearch "how many days in a week"; the gate, seeing the query only, rated
+  P(not needed) = 0.999 and **denied a search the user had explicitly asked for**. The PreToolUse input has no
+  user-message field, so the plugin now also has a UserPromptSubmit hook. Its input carries the prompt (hooks
+  reference: "`prompt` | The user's prompt text", plus the common `session_id` and `prompt_id`). While the gate is
+  on, the hook checks each prompt locally against a fixed, case-insensitive list of explicit-request phrasings in
+  English and Korean (`EXPLICIT_SEARCH_PATTERNS` in `src/judge_adapter/query_presets.py`: any form of "search" incl.
+  "web search", "search the web", "search for", "use (the) search"; "look (it) up"; "google"; "online", "internet",
+  "browse"; "cite", "source", "reference", "link"; "verify", "confirm", "fact-check"; "latest", "current", "today",
+  "now", "news", a year; 웹 검색, 검색(해/해서/해줘), 서치, 구글, 인터넷, 찾아봐, 찾아줘, 출처, 근거, 링크, 확인, 검증, 최신,
+  최근, 오늘, 현재, 지금, 뉴스). It is deliberately broad: a false positive only keeps a search. It writes one small
+  state file per session (`${CLAUDE_PLUGIN_DATA}/prompt-state/<sha256(session id)>.json`, 0600, atomic replace)
+  holding a time, an explicit flag and hash prefixes only; no prompt text. It never writes to stdout (plain stdout
+  would be added to Claude's context), never blocks a prompt and makes no network call.
+  - The gate reads that state first. **Explicit request → status `explicit_request_keep`: no endpoint call, no
+    output** (the normal permission flow; never an explicit allow). The gate asks the endpoint only when a fresh
+    state (under 30 minutes) says "no explicit request" for this session. **No state** (e.g. the gate was just
+    switched on), an unreadable state, a state of another session, an expired state, a state written before the last
+    toggle change, or a `prompt_id` mismatch → the search is **kept, with no call** (`keep_*` statuses).
+  - Update rule per prompt (conservative): a signal sets the flag. While a fresh flag exists, a prompt **without** a
+    signal leaves it in place until it expires (30 minutes from the explicit prompt, not refreshed), whatever its
+    length: "continue", "yes, go ahead", "계속", "그걸로", "do the same for hours in a day" all keep it. Only a prompt
+    that **clearly starts a new task** clears it: one that begins with a fixed marker (`NEW_TASK_PREFIXES`: "new
+    task", "new question", "new topic", "different question/topic", "unrelated question", "change of topic", 새 작업,
+    새 질문, 다른 질문, 다른 주제, 주제를 바꿔 …). Ambiguous → keep. Without a fresh flag, a prompt without a signal
+    writes "no explicit request". Each prompt's read-decide-write runs under a per-session file lock, so a concurrent
+    prompt cannot clear a flag it did not see; a lock or write failure removes the state (a signal is still written
+    if possible), so the gate keeps.
+  - Granularity: when both the state and the PreToolUse input carry `prompt_id`, they must match; otherwise the state
+    is matched by session and age only. That is a time window, **not an exact turn**.
+  - **What this fixes, and what it does not.** *Known A1 fix:* the observed failure class (prompts that say "using
+    web search", "search for", "look up", "검색해서", "출처" and the other listed phrasings) is protected: such a
+    prompt keeps every search of its turn (and of its follow-ups, until the TTL) with no gate call. *General intent
+    preservation:* **not solved.** A phrasing that is not in the list can still be denied; a keyword miss is not
+    evidence that the user did not want a search; adding the phrase of a known failure fixes that phrase class, not
+    the problem in general. This is **not a basis for turning the gate on by default**. **This fix has fake tests
+    only**; it has not been re-run in a real session. The gate stays **default-off and experimental**.
+- **Keyword guard, no call:** queries containing recency words (years, "latest", "today", "news", "version", "price",
+  최신 / 오늘 / 현재 …), verification words ("verify", "source", "official", 출처 / 확인 …) or a specific source
+  (`site:`, a URL or domain); Tavily `time_range` / `start_date` / `end_date`; and any domain field already set. It
+  is a keyword heuristic on the query, not exhaustive, and **does not preserve user intent**.
+- **Input limit:** the gate's model sees only the query, and **the query alone cannot identify an explicit user
+  request to search**. Apart from the explicit-request list above, the gate can deny a search the user asked for in
+  other words, or one that needed fresh information or verification. Allowing the same query on retry is the other
+  mitigation, and it relies on Claude retrying.
+- **Retry (loop prevention):** a denied query is recorded as a SHA-256 of (session id, tool name, normalized query) with
+  its time, one file per record under `${CLAUDE_PLUGIN_DATA}/search-gate-state/` (or the system temp directory). No
+  query text is stored. The final check and the write run as one short inter-process critical section under an
+  `fcntl.flock` lock on a per-key lock file, taken only after the endpoint has answered (never during a call), so
+  concurrent hook processes deny the same key at most once. Pruning of expired records takes the same lock and
+  re-checks inside it, so it never removes a fresh record. The same query in the same session within 10 minutes gets
+  **no output at all** (normal permission flow). Another session or another tool is not affected. No session id, a lock
+  or I/O problem, a lock wait over 1 s, or no `fcntl` (Windows): the gate never denies.
+- `gate_use_last_user_message` (proposed earlier) is **not provided**: the PreToolUse input has no user-message field,
+  reading the transcript file is out of scope, and the prompt is never sent to the endpoint (only the local
+  explicit-request check above uses it).
+
+**Domain presets** (`domain_presets_enabled`): picks ONE preset from your fixed list for the query; `none` (no
+restriction) is always available. Only the preset's own fixed list is applied; nothing the model writes is executed.
+
+- Format: `{"name": {"description": "...", "include_domains": ["a.example"]}}` (or `exclude_domains`), as JSON in the
+  option or in a file whose path you give. Exactly one list per preset (the WebSearch API rejects `allowed_domains`
+  and `blocked_domains` together), bare lower-case domains only, at most 8 presets × 20 domains. Without your own list
+  the built-in **EXAMPLE** presets `docs` (docs.python.org, developer.mozilla.org, learn.microsoft.com,
+  docs.github.com) and `academic` (arxiv.org, aclanthology.org, openreview.net, pubmed.ncbi.nlm.nih.gov) are used;
+  they are examples, not the right domains for every query.
+- Mapping: include → `allowed_domains` (WebSearch) / `include_domains` (Tavily); exclude → `blocked_domains` /
+  `exclude_domains`. `updatedInput` is the **full original input** with only that one field added; the query and
+  every other field are unchanged.
+- No change: when the input already has either of the tool's domain fields (even an empty list), when `none` wins, when
+  the top probability is below `domain_min_confidence` (default 0.6), and on any failure.
+- How it is applied: the hooks reference documents `updatedInput` together with `"allow"` or `"ask"`. The hook never
+  returns `"allow"` (it would skip your own permission prompt) and has no allow mode. `domain_apply_mode=ask`
+  (default) returns `"ask"` with the modified input, so you confirm each restricted search. **In headless (`-p`) runs
+  `ask` can block the search**: with no one to answer the prompt, Claude Code denies that call. Keep domain presets off
+  for unattended runs. `input_only` is an **experimental** mode that returns `updatedInput` without a decision; the
+  reference does not document that combination, so its real effect is **unverified**. The hook never switches to it
+  on its own. tavily-mcp's own `DEFAULT_PARAMETERS` setting overrides
+  the domain lists.
+
+**Order and limits:** the gate runs first; if it denies, the domain decision is skipped. Both share the hook's wall
+budget (`wall_budget_seconds`), at most one submission per option, and one client-side estimate cap per hook call
+(`usd_per_second × (calls × 661 s + 60 s + wall budget)`), like the filter. `enabled=false` turns both off.
+
+**Fail-open:** the hook prints nothing (normal permission flow) on: both options off, `enabled=false`, another tool, no
+query, an explicit user request or no fresh prompt state (gate), missing key / endpoint / rate, an invalid option, an HTTP error, timeout, unusable or tied answer, any
+exception, httpx missing, or the wall budget. It never returns `"allow"`, so it cannot loosen your permission rules;
+the documented precedence `deny > defer > ask > allow` keeps your own deny rules in force.
+
+**Start-up when off:** with both options off, `hooks/query_options_hook.py` exits before reading stdin or importing
+the package (no key read, no network, no state, no output); with the gate off, `hooks/user_prompt_hook.py` does the
+same on every user prompt (the prompt is not read). To decide, both read only the option environment variables and the
+small toggle file (an explicit exception: a stat / read of `toggles.json`, parsed without importing `json` when it is
+in the form the CLI writes). Measured on macOS, `/usr/bin/python3` 3.9.6, 40 runs each, medians: `python3 -c pass`
+14.4 ms; query launcher all off 14.9 ms without a toggle file and 14.8 ms with one; user-prompt launcher gate off
+14.9 / 14.7 ms; filter launcher toggled off 14.8 ms, i.e. about 0.3-0.5 ms over a bare interpreter start (before this
+change the query launcher measured 14.2 ms in the same run). The interpreter start itself (~14 ms) is paid on every
+WebSearch / `tavily_search` call and, since this change, on every user prompt while the plugin is installed. With the
+gate on, the user-prompt hook took 30.7 ms (pattern check and one state write).
+
+**Logs:** one JSON line per call, tag `davi-query-options-hook`: status, tool name, query byte count, and per option
+status, calls, seconds, server execution time, rounded probabilities (gate) or the chosen preset name and top
+probability (domain). Never the query, URLs, domain lists, preset descriptions, the session id, keys or the endpoint ID.
+The UserPromptSubmit hook logs one line, tag `davi-user-prompt-hook`: status (`explicit_set`, `follow_up_kept`,
+`cleared`, `write_failed`, `lock_failed`, ...), whether a signal matched, the prompt's byte count and `data_dir_id`
+(also in the query-options log). Never the prompt, the session id or the prompt id.
+
+### Turning features on and off
+
+The three features can be switched without the configuration dialog, from inside Claude Code or from a shell. They
+are **independent**: the filter toggle affects only the PostToolUse filter, the gate toggle only the search gate (and
+its UserPromptSubmit hook), the domain toggle only the domain presets.
+
+| Command (in a session) | Same from a shell | Effect |
+|---|---|---|
+| `/davi:status` | `python3 <plugin>/hooks/davi_toggle.py status` | Effective settings and where each comes from; warnings for states that cannot run |
+| `/davi:filter-on`, `/davi:filter-off` | `... davi_toggle.py filter on\|off` | Result filter (PostToolUse, Tavily) |
+| `/davi:gate-on`, `/davi:gate-off` | `... davi_toggle.py gate on\|off` | Search gate (experimental) |
+| `/davi:domain-on`, `/davi:domain-off` | `... davi_toggle.py domain on\|off` | Domain presets (experimental) |
+| `/davi:domain-mode-ask`, `/davi:domain-mode-input-only` | `... davi_toggle.py domain-mode ask\|input_only` | How a preset is applied |
+| (none) | `... davi_toggle.py reset` | Remove the toggle file; the userConfig values apply again |
+
+**Where and how wide:** one file, `${CLAUDE_PLUGIN_DATA}/toggles.json` (0600). For the marketplace install that is
+`~/.claude/plugins/data/davi-judge-adapter/toggles.json`; the shell CLI uses `--data-dir DIR`, else
+`CLAUDE_PLUGIN_DATA`, else that path. A `--plugin-dir` session has another plugin id and data directory, so pass
+`--data-dir` there (the slash commands always use the session's own `${CLAUDE_PLUGIN_DATA}`). The toggles are
+**install-wide, not per session**: a change applies to every session and project using that data directory,
+**including sessions that are already running**, from their next hook call.
+
+**Precedence (every hook and `status`):** (1) userConfig `enabled=false` turns all three off, and no toggle
+overrides it; (2) otherwise the toggle file, for each key it sets; (3) otherwise userConfig / environment: filter on,
+gate = `search_gate_enabled`, domain = `domain_presets_enabled`, mode = `domain_apply_mode`. `status` notes each
+toggle that overrides an explicit userConfig value and each toggle that has no effect because `enabled=false`. A
+missing toggle file means no toggles. A corrupt or unreadable one is ignored by the hooks (userConfig values apply),
+reported by `status`, and left untouched by the CLI, which refuses to change it until `reset`. Keys, the endpoint ID
+and the rate are never stored in the toggle file.
+
+**Writes:** strict arguments (exact lower-case words; anything else is a usage error, exit 2, nothing written); the
+read-modify-write runs under an exclusive `fcntl.flock`, so concurrent changes are all kept; the new file is written to
+a 0600 temp file and moved into place atomically, then read back. A failed write or a bad existing file is reported
+as `FAILED` (exit 1), never as success. No `fcntl` (Windows): changes are refused.
+
+**What `status` reads and shows:** the toggle file; userConfig values from the environment when present (hook
+processes get `CLAUDE_PLUGIN_OPTION_*`, the Bash tool does not), then the non-sensitive values Claude Code saved under
+`pluginConfigs["davi@judge-adapter"].options` in `~/.claude/settings.json` (or `$CLAUDE_CONFIG_DIR/settings.json`;
+only that block and only this plugin's non-sensitive option names are used), then the manifest defaults. It shows
+filter / gate / domain on/off with their source, the domain mode, the thresholds, the filter preset, the domain
+preset names (never the domains or a file path), the rate as set/missing, and the key and endpoint ID as
+"set"/"missing" when the environment shows them, else as "not visible here" (they are in secure storage and reach only
+hook processes; a hook log status `missing_key` / `missing_endpoint` tells you). Warnings cover states that cannot run:
+a missing rate, key or endpoint (when visible), invalid domain presets or thresholds, the built-in EXAMPLE presets in
+use, `ask` mode in headless runs, httpx not importable, a corrupt toggle file.
+
+**How the slash commands work (and what they cost):** they are plugin command files (`commands/*.md`, namespaced as
+`/davi:<name>`). Each runs `davi-toggle` (the plugin's `bin/` executable, which runs `hooks/davi_toggle.py`) through
+Claude Code's documented `` !`command` `` injection, which runs **before** the command text is sent to Claude; the
+output replaces the line. Then **Claude reads that output and relays it, so each command uses one model turn**; they
+are not built-in commands and are not free. Frontmatter: `disable-model-invocation: true` (only you can run them; they
+are not listed in Claude's context) and `allowed-tools: Bash(davi-toggle *)`, the narrowest documented pre-approval:
+injected commands need an allow rule or they abort, and this grant also lets Claude run `davi-toggle` during that one
+turn. **The commands take no arguments, and no user text is ever placed into shell code:** each command file has
+one constant injected line, e.g. `` !`davi-toggle --data-dir "${CLAUDE_PLUGIN_DATA}" gate on` ``, whose only
+expansion is the data path Claude Code substitutes (an earlier draft put `$ARGUMENTS` into that line, where the shell
+would interpret user text before the script's validation; quoting would not have fixed that, so it was removed).
+A local sentinel test renders every command with hostile arguments (`on; touch …`, `$(…)`, backticks, newlines, …)
+and runs the injected line; the sentinel file is never created, while the same harness on the old `$ARGUMENTS` form
+does create it. Text typed after a command name is not used by the script; Claude Code appends unconsumed arguments
+to the command text as `ARGUMENTS: …` for Claude to read, and the docs say `!` substitution "runs once over the
+original file" (that this appended text is never scanned for `!` was not checked in a real session). Each command
+prints the resolved data directory and a `data dir id` (a hash of its path) that the hooks also log as
+`data_dir_id`. `disableSkillShellExecution` in your settings disables the commands. A
+plugin with a top-level `bin/` is not installed by claude.ai or Cowork (Claude Code only). Five of the commands
+(`status`, `gate-on`, `gate-off`, `domain-on`, `domain-off`) were observed working in headless `claude -p` sessions
+loaded with `--plugin-dir`; the others and interactive use were not run (see
+[Verification status](#verification-status)). The shell CLI works without them.
+
 ### Verification status
 
 | What | How it was checked | Result |
@@ -329,6 +546,19 @@ What this does and does not do:
 | Built-in WebSearch | One real headless session | Hook reached; no per-result text; 0 filter calls; result unchanged |
 | Tavily `tavily_search` | One real headless session (Claude Code 2.1.285, tavily-mcp 0.2.22, one search, 5 results) | Hook ran; 5 filter calls, 5 valid answers; all 5 kept, so the result was left unchanged |
 | Dropped results removed and the shorter result received by the model | Fake tests only | **Not verified in a real run** (no result was dropped in the real run) |
+| Query-stage options: output shapes, gate deny / retry / TTL / session isolation, domain fields per tool, fail-open, zero intervention, logs | Fake transport tests only (`tests/test_query_hook.py`) | Pass. **Not run against a real endpoint, model or Claude Code session**; no quality claim |
+| Search-gate retry state across processes: at most one deny per key; TTL refresh and pruning keep the new record; sessions independent | Real separate processes with a fake endpoint (`tests/test_query_hook_race.py`, POSIX) | Pass |
+| Search gate, explicit user request (real smoke 2026-10-11, before the fix): "Using web search, confirm how many days there are in a week. Answer in one sentence." | One real Claude Code session, gate on | **Semantic failure**: WebSearch "how many days in a week" denied, P(not needed) = 0.999. Release-blocking |
+| Explicit-request protection (UserPromptSubmit state → gate keeps with no call): the A1 prompt and query, English and Korean phrasings, no state / expired / unreadable / other session / follow-ups / prompt_id, off → on, no prompt text stored, logged or sent | Fake tests only (`tests/test_query_hook.py`, `tests/test_toggles.py`) | Pass. **Not re-run in a real session**; phrasings outside the list are not covered |
+| Toggles: CLI validation, 0600 + atomic writes, concurrent changes from separate processes, corrupt files, precedence, the three toggles independent, each hook and launcher honours its toggle, status without secrets | Local tests (`tests/test_toggles.py`; launchers as real subprocesses) | Pass |
+| Fixed `/davi:*` commands (`status`, `gate-on`, `gate-off`, `domain-on`, `domain-off`) in headless `claude -p` (re-verification smoke, 2026-10-11, `--plugin-dir`) | One real session per command; toggle file compared with the expected value, the data-dir id in the command output and in the hook log compared | Observed working: each command changed or showed the toggle file as expected. `filter-*`, `domain-mode-*` and interactive use were not run |
+| Explicit-request protection in a real session (same smoke): the A1 prompt with the gate on | One real session | Observed: user-prompt hook `explicit_set`, then the gate kept the WebSearch with 0 filter calls (`explicit_request_keep`). This covers the known A1 phrasing only; general intent preservation is unverified |
+| Gate and domain both off (same smoke) | One real session with a WebSearch | Observed: no query-hook log line, no filter call |
+| Domain preset applied by `input_only` (same smoke): the model's WebSearch input had no domain fields | One real session | Not verified in that run: the single filter request timed out after 15.3 s (`no_answer`), so the input was left unchanged (fail-open observed). The cause of the timeout was not established (a cold start is a hypothesis only); the remote job's cost is unsettled. The smoke harness also missed this in-hook timeout as a stop condition, so two further sessions ran (a deviation, kept as recorded) |
+| Domain preset applied by `input_only`, same fixed prompt, one more session (2026-10-11, endpoint warmed by the user) | One real session | Observed once: the model's WebSearch input had no domain fields; one filter call chose `python_docs` (top probability 0.902); the hook returned `updatedInput` with `allowed_domains: ["docs.python.org"]` and no permission decision; Claude Code's debug log recorded "modified tool input keys: [query, mode, allowed_domains]". All result hostnames were `docs.python.org` (indirect evidence that the server applied the restriction). `ask` (the default) is still unverified |
+| Gate usefulness and preservation of user intent | Not checked | **Unverified** (development option) |
+| Whether Claude Code applies `updatedInput` from `domain_apply_mode=ask` | Not run (`ask` needs an interactive session) | **Unverified**; `input_only` was observed once (row above) |
+| What Claude does after a gate deny | One earlier real session (before the fix): it retried the same query, which then ran (`retry_allowed`) | Observed once |
 
 The real runs used a self-hosted choice endpoint; the exact filter-call cost of those runs was not recorded, and
 client-side reservation caps are not bills.
@@ -385,11 +615,20 @@ judge-adapter/
 │   ├── plugin.json              # plugin manifest: name, version, userConfig
 │   └── marketplace.json         # marketplace "judge-adapter" listing the plugin (source "./")
 ├── hooks/
-│   ├── hooks.json               # PostToolUse matcher: Tavily tavily_search only
-│   └── context_filter_hook.py   # stdlib launcher -> judge_adapter.plugin_hook
+│   ├── hooks.json               # PostToolUse: tavily_search; PreToolUse: WebSearch + tavily_search; UserPromptSubmit
+│   ├── context_filter_hook.py   # stdlib launcher -> judge_adapter.plugin_hook (exits at once when toggled off)
+│   ├── query_options_hook.py    # stdlib launcher -> judge_adapter.query_hook (exits at once when options are off)
+│   ├── user_prompt_hook.py      # stdlib launcher -> judge_adapter.prompt_signal (UserPromptSubmit; gate only)
+│   └── davi_toggle.py           # stdlib control CLI: status, filter / gate / domain on|off, domain-mode, reset
+├── commands/                    # fixed commands: /davi:status, /davi:{filter,gate,domain}-{on,off}, /davi:domain-mode-*
+├── bin/davi-toggle              # runs hooks/davi_toggle.py; on the Bash tool PATH while the plugin is enabled
 ├── src/judge_adapter/
 │   ├── context_filter.py        # ContextFilter, policies, preset, budget ledger
 │   ├── plugin_hook.py           # PostToolUse hook: parse Tavily results, filter, rebuild, fail-open
+│   ├── query_hook.py            # PreToolUse hook: optional search gate and domain presets (off by default)
+│   ├── query_presets.py         # EXPERIMENTAL wording, example presets, guard and explicit-request patterns
+│   ├── prompt_signal.py         # UserPromptSubmit: explicit search request -> per-session state (no prompt text)
+│   ├── toggles.py               # toggles.json: read, precedence, locked atomic writes
 │   ├── plugin_names.py          # plugin / marketplace working names in one place
 │   ├── backends.py              # haiku_direct and choice_endpoint backends (httpx, retries 0)
 │   ├── core.py                  # JudgeAdapter, build_backend, trace writer
@@ -850,7 +1089,10 @@ JUDGE_ADAPTER_FASTCHAT_ROOT=/path/to/FastChat pytest   # also runs the FastChat 
 
 All tests use fake transports; network sockets and key reads are blocked, and the key / endpoint environment
 variables are removed for each test. The plugin hook tests (`tests/test_plugin_hook.py`) drive the hook entry point
-with sample hook inputs and a fake choice endpoint, and run the launcher as a subprocess.
+with sample hook inputs and a fake choice endpoint, and run the launcher as a subprocess;
+`tests/test_query_hook.py` does the same for the optional PreToolUse options and the explicit-request protection,
+`tests/test_query_hook_race.py` runs the search-gate retry state in real separate processes, and
+`tests/test_toggles.py` covers the toggle file, the control CLI, the command files and each launcher's toggle.
 
 ### Limits
 
@@ -867,6 +1109,11 @@ with sample hook inputs and a fake choice endpoint, and run the launcher as a su
 - **Plugin: drop → replace → model not verified in a real run.** See [Verification status](#verification-status).
   The replacement path is covered by fake tests only; the shape in which Claude Code hands MCP output to hooks is not
   documented and was observed once.
+- **Query-stage options are fake-tested only.** The domain presets were never run in a real session; the search gate
+  ran once in a real session and denied a search the user had explicitly asked for (2026-10-11). The explicit-request
+  protection added after that is fake-tested only and covers only the listed phrasings. Prompts and thresholds are
+  untuned. The gate can still block a needed search (mitigated by the explicit-request check and by allowing the same
+  query on retry); the domain lists are examples.
 - Pairwise requests run sequentially; no parallelism, no resume. Two turns at most. Custom option ids and score
   scales are not supported. The context filter has opt-in bounded concurrency (default 1), tested with fakes only.
 
@@ -892,7 +1139,7 @@ with sample hook inputs and a fake choice endpoint, and run the launcher as a su
 - **Claude Code plugin `davi`:** `claude plugin marketplace add hundredeuk2/judge-adapter` 후 `claude plugin install
   davi@judge-adapter`. 대상은 **Tavily MCP의 `tavily_search` 하나**다(`tavily-mcp` npm 0.2.22, 소스 commit `1c1d54c`에서
   출력 형식 확인). 서버 별칭과 상관없이 `^mcp__[A-Za-z0-9_-]+__tavily_search$`로만 매칭하고, 다른 도구(다른 Tavily 도구·
-  다른 검색 MCP·읽기/쓰기 도구·내장 WebSearch)에는 전혀 개입하지 않는다. **Claude Code 내장 WebSearch는 필터하지
+  다른 검색 MCP·읽기/쓰기 도구·내장 WebSearch)에는 전혀 개입하지 않는다(결과 필터 기준; 검색 전 선택 옵션은 아래 항목). **Claude Code 내장 WebSearch는 필터하지
   않는다**: 한 번의 실제 실행에서 결과마다 제목·URL만 있고 본문이 없었다(점수 매길 텍스트 없음). Tavily 서버 추가는 버전을
   고정한다: `claude mcp add --transport stdio --env TAVILY_API_KEY="$TAVILY_API_KEY" tavily -- npx -y tavily-mcp@0.2.22`
   (Tavily API 키는 본인 것, 검색 비용은 Tavily 크레딧 과금, 키가 없으면 keyless 모드로 검색은 동작). hook은 검색어
@@ -914,6 +1161,85 @@ with sample hook inputs and a fake choice endpoint, and run the launcher as a su
   Claude Code가 MCP 출력을 hook에 넘기는 모양은 문서화되어 있지 않다. 선택 사항으로, 본인 `settings.json`에서 내장
   WebSearch를 deny하면 웹 검색을 Tavily로 제한한 구성에서 지원 응답에 hook이 적용된다. 이는 WebSearch만 막을 뿐
   WebFetch·Bash·다른 MCP·미지원/오류 응답·fail-open 경우는 필터를 거치지 않으며, plugin이 권한을 자동으로 바꾸지 않는다.
+- **선택 기능: 검색 전 옵션(실험적, 기본 꺼짐):** PreToolUse hook이 내장 `WebSearch`와 Tavily `tavily_search` 두 도구에만
+  붙는다. 둘 다 꺼져 있으면 launcher가 stdin도 읽지 않고 바로 끝난다(키·네트워크·상태 파일·출력 없음; 판단을 위해 환경변수와
+  작은 toggle 파일만 읽는다; 측정 시 빈 Python 실행 대비 약 0.3~0.5 ms 추가, Python 시작 자체 약 14 ms는 검색마다, 그리고
+  이번 변경부터 사용자 프롬프트마다 든다). 켜면 검색마다 옵션당 endpoint 호출 1회가
+  추가되고 검색은 그만큼 기다린다. endpoint로 보내는 것은 **검색어뿐**이다(domain preset은 사용자가 정한 preset 이름·
+  설명·도메인 목록 포함). PreToolUse 입력에는 사용자 메시지 필드가 없고 transcript 파일은 읽지 않으므로
+  `gate_use_last_user_message`는 제공하지 않는다. 프롬프트는 아래 UserPromptSubmit hook이 로컬에서 명시 요청 여부만
+  확인하며 전송·저장·로그하지 않는다. (1) **search gate**(기본 꺼진 개발용 옵션; 실제 유용성과 사용자 의도 보존은 미검증, transcript 접근·프롬프트/임계값 튜닝 없음): needed / not needed / cannot tell 중 P(not needed)가
+  `search_gate_threshold`(기본 0.85, 사전 고정·미보정) 이상일 때만 deny하고, Claude에게는 고정 안내문(검증된 판단이 아니며
+  필요하면 같은 검색어로 다시 시도하라는 내용)만 보인다. 최신성·검증·특정 출처 키워드가 있는 검색어와 Tavily 날짜 필드·이미
+  지정된 도메인 필드는 호출 없이 통과시키지만, 이는 키워드 휴리스틱일 뿐 사용자 의도를 보존하지 않는다. **검색어만으로는
+  사용자의 명시적 검색 요청을 알 수 없으므로** 필요한 검색을 막을 수 있다. 실제로 2026-10-11 실제 smoke에서 gate를 켠 채
+  "Using web search, confirm how many days there are in a week. Answer in one sentence."를 입력하자 WebSearch
+  "how many days in a week"가 P(not needed)=0.999로 deny되었다. **사용자가 명시적으로 요청한 검색을 막은 의미상 실패이며
+  릴리스 차단 사유다.** 그래서 **UserPromptSubmit hook**을 추가했다(입력에 `prompt`·`session_id`·`prompt_id`가 있음, hooks
+  문서). gate가 켜져 있을 때만 프롬프트를 고정 패턴 목록(영어·한국어, 대소문자 무시: search 계열 전부, look up, google,
+  online/internet, cite/source/reference/link, verify/confirm, latest/current/today/now/news/연도, 웹 검색·검색해(서/줘)·
+  서치·구글·인터넷·찾아봐·찾아줘·출처·근거·링크·확인·검증·최신·최근·오늘·현재·지금·뉴스)과 로컬에서 대조하고, 세션별 작은
+  상태 파일(시각·명시 여부·해시 접두만, 프롬프트 원문 없음, 0600, 원자적 교체)을 남긴다. stdout에는 아무것도 쓰지 않고
+  (plain stdout은 Claude 문맥에 추가됨) 프롬프트를 막지 않으며 네트워크 호출이 없다. gate는 이 상태를 먼저 읽어 **명시
+  요청이면 `explicit_request_keep`: endpoint 호출 0, 출력 없음**(원래 권한 흐름, 명시적 allow 아님). 30분 이내의 "명시 요청
+  없음" 상태가 있을 때만 endpoint에 묻고, **상태 없음(예: 방금 켬)·읽기 오류·다른 세션·만료·마지막 toggle 변경 이전 상태·
+  `prompt_id` 불일치에서는 호출 없이 검색을 유지**한다. 갱신 규칙(보수적): 신호가 있으면 플래그를 세운다. 유효한 플래그가
+  있을 때 신호 없는 프롬프트는 길이와 상관없이 플래그를 만료(명시 프롬프트로부터 30분, 연장 없음)까지 유지한다("continue",
+  "계속", "그걸로", "같은 방식으로 하루는 몇 시간인지도" 등). **새 작업이 분명할 때만**, 즉 고정 표지(`NEW_TASK_PREFIXES`:
+  "new task", "new question", "different topic", 새 작업·새 질문·다른 질문·다른 주제·주제를 바꿔 등)로 시작할 때만 지운다.
+  애매하면 유지한다. 세션별 파일 lock 아래에서 읽고-판단하고-쓰므로 동시 프롬프트가 보지 못한 플래그를 지우지 못하며,
+  lock·쓰기 실패 시 상태를 지워(신호는 가능하면 기록) gate가 유지하게 한다. 공식 turn id가 PreToolUse에 따로 없으므로 양쪽에 `prompt_id`가 있을 때만 일치를 요구하고,
+  아니면 세션+시간 창으로 맞춘다(정확한 turn 단위가 아님). **알려진 A1 수정과 일반 의도 보존을 구분한다**: 관찰된 A1
+  표현 계열("using web search", "search for", "검색해서", "출처" 등 목록의 표현)은 보호되지만, 일반 의도 보존은 **해결되지
+  않았다**. 목록에 없는 표현은 여전히 deny될 수 있고, 키워드 미검출은 검색 의도가 없다는 증거가 아니며, 알려진 실패 문구를
+  고친 것은 일반 해결이 아니고 **기본 채택의 근거가 아니다**.
+  **이 수정은 fake 테스트로만 확인했다.** gate는 계속 기본 꺼짐·실험 기능이다. 같은 세션·같은 도구·같은 정규화 검색어는 deny 후
+  10분간 **아무 출력 없이** 통과시켜 완화한다(SHA-256 해시와 시각만 저장, 검색어 원문 저장 없음, 다른 세션은 영향 없음).
+  최종 확인과 기록은 키별 lock 파일의 `fcntl.flock` 아래 짧은 프로세스 간 임계 구역에서 수행하며(endpoint 호출 중에는
+  lock을 잡지 않음) 같은 키 deny는 최대 1회다. 만료 기록 정리도 같은 lock 안에서 다시 확인해 새 기록을 지우지 않는다.
+  세션 id 없음·lock/IO 문제·`fcntl` 없음(Windows)에서는 deny하지 않는다. (2) **domain presets**: 사용자가 정한 고정 preset 목록(없으면 예시 `docs`·`academic`; 모든
+  질의에 맞는 도메인이 아님) 중 하나를 고르며 `none`(제한 없음)은 항상 있다. 모델이 쓴 도메인은 실행하지 않는다.
+  include → `allowed_domains`/`include_domains`, exclude → `blocked_domains`/`exclude_domains`로 그 필드 하나만 더한
+  **원래 입력 전체**를 `updatedInput`으로 돌려준다. 이미 도메인 필드가 있거나(빈 목록 포함) `none`이 이기거나 최고 확률이
+  `domain_min_confidence`(기본 0.6) 미만이면 바꾸지 않는다. hook은 `"allow"`를 절대 내지 않는다. allow 모드도 없다. 기본
+  `domain_apply_mode=ask`는 문서화된 `"ask"`+`updatedInput`이라 사용자가 바뀐 검색을 확인한다. **headless(`-p`) 실행에서는
+  답할 사람이 없어 `ask`가 검색을 막을 수 있으므로** 무인 실행에서는 domain preset을 끄는 것이 맞다. `input_only`는 결정
+  없이 `updatedInput`만 주는 실험 모드이며 문서에 없는 조합이라 실제 효과는 미검증이다. 자동으로 `input_only`로 바꾸지
+  않는다.
+  순서는 gate 먼저, deny면 domain 생략이며 시간 예산·호출 상한·비용 추정 상한을 공유한다. 오류·시간 초과·설정 누락/오류·
+  동률 답·예외에서는 아무것도 출력하지 않는다(fail-open). 로그는 상태·호출 수·시간·반올림 확률·고른 preset 이름만 남기고
+  검색어·URL·도메인 목록·세션 id·키는 남기지 않는다. domain preset은 **fake 테스트로만 확인했고**, gate는 위 실제 smoke
+  1회(실패) 외에는 fake 테스트뿐이다. **품질 주장 없음.**
+- **기능 켜고 끄기:** Claude Code 안에서 인자 없는 고정 명령 `/davi:status`, `/davi:filter-on`, `/davi:filter-off`,
+  `/davi:gate-on`, `/davi:gate-off`, `/davi:domain-on`, `/davi:domain-off`, `/davi:domain-mode-ask`,
+  `/davi:domain-mode-input-only`, 셸에서는 `python3 <plugin>/hooks/davi_toggle.py filter|gate|domain on|off`,
+  `domain-mode ask|input_only`, `status`, `reset`(엄격한 인자 검사).
+  세 기능은 서로 독립이다(filter off가 gate/domain을 끄지 않음). 파일은 `${CLAUDE_PLUGIN_DATA}/toggles.json` 하나(0600,
+  마켓플레이스 설치는 `~/.claude/plugins/data/davi-judge-adapter/`, `--plugin-dir` 세션은 다른 디렉터리이므로
+  `--data-dir` 지정)이며 **세션별이 아니라 설치 전체 공유**라서 이미 실행 중인 다른 세션에도 다음 hook 호출부터 적용된다.
+  우선순위: (1) userConfig `enabled=false`는 세 기능을 모두 끄고 어떤 toggle도 이를 넘지 못한다, (2) 그 외에는 toggle
+  파일이 정한 키, (3) 나머지는 userConfig/환경변수. 파일이 없으면 toggle 없음, 손상·읽기 불가면 hook은 무시하고 userConfig를
+  쓰며 `status`가 경고하고 CLI는 `reset` 전까지 수정을 거부한다. 쓰기는 엄격한 인자 검사, `fcntl.flock` 아래 읽기-수정-쓰기
+  (동시 변경 보존), 0600 임시 파일의 원자적 교체 후 재확인이며, 실패는 성공으로 보고하지 않는다(`FAILED`, 종료 코드 1).
+  키·endpoint ID·단가는 toggle 파일에 넣지 않는다. `status`는 비밀값을 출력하지 않으며 키·endpoint는 환경변수에 보일 때만
+  set/missing, 아니면 "not visible here"(secure storage에 있고 hook 프로세스에만 전달)로 표시하고, 단가 누락·잘못된
+  preset·EXAMPLE preset 사용·httpx 없음 같은 실행 불가 상태를 경고한다. slash command는 plugin `commands/*.md`이며 문서화된
+  `` !`command` `` 주입으로 plugin `bin/davi-toggle`을 실행한 뒤 **Claude가 그 출력을 전달하므로 명령마다 모델 turn 1회를
+  쓴다**(내장 명령이 아니고 무료가 아님). `disable-model-invocation: true`, `allowed-tools: Bash(davi-toggle *)`로 권한을
+  최소화했다. 사용자 문자열은 셸 코드에 절대 들어가지 않는다: 각 명령 파일의 주입 줄은 상수이고 유일한 확장은 Claude Code가
+  치환하는 데이터 경로다(이전 초안의 `$ARGUMENTS`는 셸이 사용자 텍스트를 먼저 해석하는 문제가 있어 제거했고, 인용으로는
+  해결되지 않는다). 악성 인자로 렌더링·실행해도 sentinel 파일이 생기지 않음을 로컬 테스트로 확인했다(같은 테스트가 이전
+  형식에서는 sentinel을 만든다). 명령 출력과 hook 로그에 같은 `data dir id`(경로 해시)가 남는다. 재검증 smoke(2026-10-11,
+  `--plugin-dir`, headless `claude -p`)에서 `status`·`gate-on`·`gate-off`·`domain-on`·`domain-off` 5개가 실제로 동작함을
+  관측했다(토글 파일·data dir id 대조). 나머지 명령과 대화형 사용은 실행하지 않았다. 같은 smoke에서 A1 프롬프트는 gate가
+  Davi 호출 0으로 유지했고(알려진 A1 표현 보호만, 일반 의도 보존은 미검증), gate·domain 모두 off면 hook이 개입하지
+  않았다. domain `input_only` 적용은 그 smoke에서는 단 1회의 필터 요청이 15.3초 timeout(no_answer)으로 끝나 입력이 그대로
+  유지되었다(timeout 원인은 확정하지 않았고 cold start는 가설일 뿐이다; 하네스가 이 hook 내부 timeout을 중단 조건으로
+  잡지 못해 2세션이 더 실행된 편차가 있었다). 같은 고정 프롬프트로 1세션을 더 실행했을 때(사용자가 endpoint를 미리 데움)
+  모델 입력에는 도메인이 없었고, 필터 1회가 `python_docs`(최고 확률 0.902)를 골라 hook이 `allowed_domains`
+  `["docs.python.org"]`를 담은 `updatedInput`을 결정 없이 반환했으며, Claude Code debug 로그에 "modified tool input keys:
+  [query, mode, allowed_domains]"가 기록되었다(1회 관측; 결과 hostname이 모두 docs.python.org인 것은 서버 적용의 간접
+  증거). 기본값 `ask`는 여전히 미검증이다. 셸 CLI는 별도로 동작한다.
 - **유지하는 동작:** 기본 fake·real은 명시 opt-in(`--allow-real` + `--max-submissions` + `--budget-cap-usd`),
   재시도 0, 실행 전체 제출·비용 상한, 비용 불명은 `null`, 전송 전 오류는 제출 0(`local_config`), 저장 trace·CLI
   출력·오류 메시지·log 키 제거(응답 파싱은 원문 body로 하고 메모리 결과의 provider 값은 바꾸지 않음),
@@ -948,7 +1274,8 @@ with sample hook inputs and a fake choice endpoint, and run the launcher as a su
   쓴다. 과거 16회 실제 smoke는 실험 버전에 대한 결과이며 이 패키지의 실제 실행 결과가 아니다. fake에서 두 방향
   결과가 같다는 것은 실제 모델의 순서 불변성 증거가 아니다. 비용은 클라이언트 추정이며 청구액이 아니다. plugin은
   `claude plugin validate --strict`와 서버 formatter로 재구성한 fixture 검사를 통과했다. 실제 실행은 내장 WebSearch 1회
-  (통과만 확인)와 Tavily 1회(필터 호출 5회, 전부 keep)다. context filter는 commit `331081c`에서 실제 endpoint로 30회
+  (통과만 확인)와 Tavily 1회(필터 호출 5회, 전부 keep), 그리고 search gate 1회(명시 요청 검색을 deny한 실패; 이후 수정은
+  fake 테스트만)다. context filter는 commit `331081c`에서 실제 endpoint로 30회
   smoke(합성 문서, 계약·예산·순서·동시성 확인, 품질 주장 없음)를 했고, pairwise judge는 이 패키지로 실제 실행한 적이 없다.
 
 ## Citation
@@ -960,7 +1287,7 @@ If you use this software, please cite the repository:
   author  = {hundredeuk2},
   title   = {judge-adapter: context filtering and pairwise LLM-judge calls},
   year    = {2026},
-  version = {0.3.0},
+  version = {0.4.0},
   url     = {https://github.com/hundredeuk2/judge-adapter}
 }
 ```

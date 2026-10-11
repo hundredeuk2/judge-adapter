@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "judge-adapter"
-version = "0.3.0"
+version = "0.4.0"
 description = "Pairwise LLM-judge call adapter: fixed options, retries 0, run-wide client-side limits, JSONL CLI, optional FastChat binding, and a retrieval context filter."
 readme = "README.md"
 license = "Apache-2.0"
@@ -61,6 +61,8 @@ include = [
     "/tests",
     "/examples",
     "/hooks",
+    "/commands",
+    "/bin",
     "/.claude-plugin",
     "/README.md",
     "/LICENSE",

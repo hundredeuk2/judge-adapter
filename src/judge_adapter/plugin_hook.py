@@ -154,6 +154,15 @@ class Settings:
     on_all_dropped: str = 'keep_original'
     mcp_tools: tuple = ()                 # ((tool name, format), ...)
     log_file: str | None = None
+    # Optional query-stage options (PreToolUse, hooks/query_options_hook.py), all off by default. Parsed only by
+    # ``query_hook.load_query_settings``; ``load_settings`` below leaves them at these defaults, so the PostToolUse
+    # filter neither reads nor validates them.
+    domain_presets_enabled: bool = False
+    domain_presets: object = None         # parsed presets (tuple) after load_query_settings; raw option otherwise
+    domain_min_confidence: float = 0.6
+    domain_apply_mode: str = 'ask'
+    search_gate_enabled: bool = False
+    search_gate_threshold: float = 0.85
 
 
 def load_settings(env):
@@ -653,13 +662,18 @@ def run_with_budget(fn, seconds):
 
 
 def main(stdin=None, stdout=None, stderr=None, env=None, transport=None, exit_fn=os._exit, clock=time.perf_counter,
-         sleep=time.sleep):
+         sleep=time.sleep, toggle_file=None):
     stdin, stdout, stderr = stdin or sys.stdin, stdout or sys.stdout, stderr or sys.stderr
     env = os.environ if env is None else env
     logging.getLogger('httpx').setLevel(logging.WARNING)       # httpx logs request URLs (endpoint ID) at INFO
     settings, rec = None, {'event': N.LOG_TAG}
     try:
         settings = load_settings(env)
+        # The filter toggle (toggles.json, "filter": false) turns only this filter off; the global enabled=false
+        # already does. A missing or corrupt toggle file changes nothing here.
+        from . import toggles as T
+        if T.read(toggle_file or T.toggle_path(env))[0].get('filter') is False:
+            settings = dataclasses.replace(settings, enabled=False)
         payload = json.loads(stdin.read())
     except ConfigError as e:
         rec.update(status='config_error', detail=str(e))

@@ -326,12 +326,13 @@ def test_httpx_logger_kept_quiet():
 
 
 # --- launcher and manifests ----------------------------------------------------------------------------------------
-def test_launcher_subprocess_fails_open_without_key():
+def test_launcher_subprocess_fails_open_without_key(tmp_path):
     """The real entry point as Claude Code runs it (exec form). No key -> returns before any network use."""
     p = payload({'results': [item(0, '[[KEEP=0.1]]')]})
     e = {k: v for k, v in os.environ.items() if not k.startswith(('CLAUDE_PLUGIN_OPTION_', N.ENV_PREFIX))
          and k not in ('RUNPOD_API_KEY', 'JUDGE_ADAPTER_CHOICE_ENDPOINT_ID', 'PYTHONPATH')}
     e['CLAUDE_PLUGIN_ROOT'] = str(ROOT)
+    e['CLAUDE_PLUGIN_DATA'] = str(tmp_path / 'data')         # no toggle file: the normal path runs
     r = subprocess.run([sys.executable, str(ROOT / 'hooks' / 'context_filter_hook.py')], input=json.dumps(p),
                        capture_output=True, text=True, env=e, timeout=60)
     assert r.returncode == 0 and r.stdout == ''

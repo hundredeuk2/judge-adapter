@@ -1,0 +1,13 @@
+#!/usr/bin/env python3
+# Copyright 2026 hundredeuk2
+# SPDX-License-Identifier: Apache-2.0
+"""davi-toggle: runs hooks/davi_toggle.py (stdlib only). Claude Code puts a plugin's bin/ on the Bash tool's PATH
+while the plugin is enabled (https://code.claude.com/docs/en/plugins/components, "Executables"), so the /davi:*
+commands can call it by this bare name and pre-approve exactly ``Bash(davi-toggle *)``."""
+import os
+import runpy
+import sys
+
+here = os.path.dirname(os.path.realpath(__file__))
+sys.argv[0] = os.path.join(os.path.dirname(here), 'hooks', 'davi_toggle.py')
+runpy.run_path(sys.argv[0], run_name='__main__')

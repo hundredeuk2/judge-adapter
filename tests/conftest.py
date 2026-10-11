@@ -14,9 +14,18 @@ SECRET_ENV = ('ANTHROPIC_API_KEY', 'RUNPOD_API_KEY', 'JUDGE_ADAPTER_CHOICE_ENDPO
 
 
 @pytest.fixture(autouse=True)
-def _clean_env(monkeypatch):
+def _clean_env(monkeypatch, tmp_path_factory):
     for name in SECRET_ENV:
         monkeypatch.delenv(name, raising=False)
+    # The davi toggle file and prompt state default to the user's real plugin data / temp directory: point them at a
+    # fresh per-test directory so no test reads or writes the developer's own files.
+    from judge_adapter import prompt_signal as PS
+    from judge_adapter import toggles as T
+    data = tmp_path_factory.mktemp('plugin-data')
+    monkeypatch.setattr(T, 'default_data_dir', lambda home=None: str(data))
+    real_state_dir = PS.default_state_dir
+    monkeypatch.setattr(PS, 'default_state_dir', lambda env: real_state_dir(env) if env.get('CLAUDE_PLUGIN_DATA')
+                        else str(data / PS.STATE_DIRNAME))
 
 
 def block_key_reads(monkeypatch):

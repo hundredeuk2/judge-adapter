@@ -1,7 +1,7 @@
 {
   "name": "davi",
-  "version": "0.3.0",
-  "description": "Filters Tavily MCP search results (tavily-mcp 0.2.22, tool tavily_search) before the model reads them: one choice-model call per result scores P(keep), and results below the preset threshold are removed. Other tools, including built-in WebSearch, are not touched. Fail-open: on any error the result is left unchanged.",
+  "version": "0.4.0",
+  "description": "Filters Tavily MCP search results (tavily-mcp 0.2.22, tool tavily_search) before the model reads them: one choice-model call per result scores P(keep), and results below the preset threshold are removed. Fail-open: on any error the result is left unchanged. Optional and off by default (experimental): a search gate and domain presets that run before WebSearch or tavily_search.",
   "author": {
     "name": "hundredeuk2",
     "url": "https://github.com/hundredeuk2"
@@ -38,7 +38,7 @@
     "enabled": {
       "type": "boolean",
       "title": "Enable the filter",
-      "description": "Turn the search-result filter on or off without uninstalling.",
+      "description": "Global switch: false turns the search-result filter and the optional query-stage options off without uninstalling. The /davi:filter, /davi:gate and /davi:domain toggles never override false.",
       "default": true
     },
     "preset": {
@@ -88,6 +88,46 @@
       "title": "Log file (optional)",
       "description": "Append one JSON line per search (counts and bytes only, no text or keys). Empty: stderr only.",
       "default": ""
+    },
+    "domain_presets_enabled": {
+      "type": "boolean",
+      "title": "Domain presets (experimental)",
+      "description": "Off by default. Before WebSearch or tavily_search runs, one extra choice-endpoint call (sending the search query only) picks one preset from your fixed list (or none) and adds that preset's domain list. Untuned and unvalidated.",
+      "default": false
+    },
+    "domain_presets": {
+      "type": "string",
+      "title": "Domain presets JSON or file path (optional)",
+      "description": "JSON object {name: {description, include_domains | exclude_domains}} or a path to a file holding it. Exactly one list per preset; bare domains only. \"none\" (no restriction) is always added. Empty: the built-in EXAMPLE presets docs and academic, which are examples, not recommendations.",
+      "default": ""
+    },
+    "domain_min_confidence": {
+      "type": "number",
+      "title": "Domain preset minimum probability",
+      "description": "Apply the chosen preset only if its probability is at least this (0-1). Pre-fixed experimental value, not calibrated.",
+      "default": 0.6,
+      "min": 0,
+      "max": 1
+    },
+    "domain_apply_mode": {
+      "type": "string",
+      "title": "How a preset is applied",
+      "description": "ask (default): updatedInput with permissionDecision ask, so you confirm the modified search; in headless -p runs ask can block the search. input_only: experimental, updatedInput without a decision (undocumented; real effect unverified). There is no allow mode.",
+      "default": "ask"
+    },
+    "search_gate_enabled": {
+      "type": "boolean",
+      "title": "Search gate (experimental)",
+      "description": "Off by default; development option whose real usefulness and preservation of user intent are unverified. Before WebSearch or tavily_search runs, one extra choice-endpoint call (sending the search query only; the query alone cannot show an explicit user request to search) rates whether the search is needed; a search rated unnecessary above the threshold is denied with a fixed notice, and the same query is allowed on retry. A UserPromptSubmit hook checks your prompt locally against a fixed list of explicit search requests (the prompt is never sent or stored); then, or without a fresh prompt check, the search is kept with no call. Phrasings outside the list can still be denied.",
+      "default": false
+    },
+    "search_gate_threshold": {
+      "type": "number",
+      "title": "Search gate deny threshold",
+      "description": "Deny only if P(not needed) is at least this (0.5-1). Pre-fixed experimental value, not calibrated; a high probability is not a correct judgment.",
+      "default": 0.85,
+      "min": 0.5,
+      "max": 1
     }
   }
 }

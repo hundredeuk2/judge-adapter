@@ -1,5 +1,41 @@
 {
   "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "WebSearch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/query_options_hook.py"],
+            "timeout": 75
+          }
+        ]
+      },
+      {
+        "matcher": "^mcp__[A-Za-z0-9_-]+__tavily_search$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/query_options_hook.py"],
+            "timeout": 75
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/user_prompt_hook.py"],
+            "timeout": 10
+          }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
         "matcher": "^mcp__[A-Za-z0-9_-]+__tavily_search$",

@@ -7,7 +7,7 @@ worker on RunPod serverless, configured explicitly).
 Transport ``fake`` runs fully in-process (no key, no network). See README.md.
 Context / retrieval filter (choice_endpoint only, explicit policy required): ``judge_adapter.context_filter``.
 """
-__version__ = '0.3.0'
+__version__ = '0.4.0'
 
 from .contract import AdapterConfig, JudgeRequest, JudgeResult, Response  # noqa: E402,F401
 from .core import JudgeAdapter, build_backend  # noqa: E402,F401
